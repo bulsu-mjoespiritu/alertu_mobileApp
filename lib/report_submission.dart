@@ -852,86 +852,10 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      _buildSectionTitle('Severity Level', textMain),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: ['Low', 'Medium', 'High'].map((level) {
-                          final isSelected = _selectedSeverity == level;
-                          return Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 3.0),
-                              child: InkWell(
-                                onTap: _isSubmitting
-                                    ? null // 🔒 Disables severity tap during submission
-                                    : () => setState(() => _selectedSeverity = level),
-                                borderRadius: BorderRadius.circular(8),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 10),
-                                  decoration: BoxDecoration(
-                                    color: isSelected ? primaryBlue : cardBg,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: isSelected ? primaryBlue : cardBorder),
-                                  ),
-                                  child: Center(
-                                    child: Text(
-                                      level,
-                                      style: TextStyle(
-                                        color: isSelected ? Colors.white : textMain,
-                                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                      const SizedBox(height: 16),
-
-                      _buildSectionTitle('Additional Hazards', textMain),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: ['None', 'Electrical', 'Chemical', 'Fire', 'Others'].map((hazard) {
-                          final isSelected = _selectedHazard == hazard;
-                          return ChoiceChip(
-                            label: Text(hazard),
-                            selected: isSelected,
-                            onSelected: _isSubmitting
-                                ? null // 🔒 Disables hazard chip during submission
-                                : (val) => setState(() => _selectedHazard = hazard),
-                            selectedColor: primaryBlueLight,
-                            backgroundColor: cardBg,
-                            side: BorderSide(
-                              color: isSelected ? primaryBlue : cardBorder,
-                              width: 1,
-                            ),
-                            labelStyle: TextStyle(
-                              color: isSelected ? primaryBlue : textMain,
-                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                              fontSize: 13,
-                            ),
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          );
-                        }).toList(),
-                      ),
-                      _buildAnimatedField(
-                        _selectedHazard == 'Others',
-                        _customHazardController,
-                        'Specify hazard details...',
-                        cardBg: cardBg,
-                        cardBorder: cardBorder,
-                        textMain: textMain,
-                        textMuted: textMuted,
-                        primaryBlue: primaryBlue,
-                        enabled: !_isSubmitting, // 🔒 Disabled input during submission
-                      ),
-                      const SizedBox(height: 16),
-
+                      // Hazard and severity selection UI intentionally hidden.
+                      // Existing state variables remain available for submission,
+                      // with defaults of Low severity and None hazard.
+                      const SizedBox(height: 4),
                       _buildSectionTitle('Additional Details', textMain),
                       const SizedBox(height: 8),
                       TextField(

@@ -15,14 +15,15 @@ import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:flex_color_scheme/flex_color_scheme.dart';
 
 /// 🛡️ Custom HttpOverrides class to handle SSL Certificate verification
-/// for Render endpoints and Backblaze B2 storage on devices/emulators missing root CAs.
-class RenderHttpOverrides extends HttpOverrides {
+/// for Railway endpoints and Backblaze B2 storage on devices/emulators missing root CAs.
+class AppHttpOverrides extends HttpOverrides {
   @override
   HttpClient createHttpClient(SecurityContext? context) {
     return super.createHttpClient(context)
       ..badCertificateCallback = (X509Certificate cert, String host, int port) {
-        // Automatically trust SSL handshakes from Render, Backblaze, or internal domains
-        if (host.contains('onrender.com') ||
+        // Automatically trust SSL handshakes from Railway, Backblaze, Render, or internal domains
+        if (host.contains('up.railway.app') ||
+            host.contains('onrender.com') ||
             host.contains('backblazeb2.com') ||
             host.contains('alertu')) {
           return true;
@@ -34,7 +35,7 @@ class RenderHttpOverrides extends HttpOverrides {
 
 void main() async {
   // 🔒 1. Apply global HTTP Overrides FIRST before any initialization
-  HttpOverrides.global = RenderHttpOverrides();
+  HttpOverrides.global = AppHttpOverrides();
 
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);

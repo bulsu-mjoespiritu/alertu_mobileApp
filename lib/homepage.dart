@@ -647,6 +647,26 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     _lineManager = controller.lineManager;
   }
 
+  Future<void> _onSearchPlaceSelected(
+      LatLng coordinates,
+      String displayName,
+      ) async {
+    final controller = mapController;
+    if (controller == null) {
+      debugPrint('Cannot center search result: map controller is not ready.');
+      return;
+    }
+
+    try {
+      await controller.animateCamera(
+        CameraUpdate.newLatLngZoom(coordinates, 16.0),
+        duration: const Duration(milliseconds: 850),
+      );
+    } catch (error) {
+      debugPrint('Could not center map on "$displayName": $error');
+    }
+  }
+
   String _reportIdentity(dynamic report) {
     if (report is! Map) return '';
     return (report['_id'] ??
@@ -1502,7 +1522,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                   child: SlideDownAnimation(
                     child: MapSearchBar(
                       searchBounds: _bulacanBounds,
-                      onPlaceSelected: (coordinates, displayName) {},
+                      onPlaceSelected: _onSearchPlaceSelected,
                       onClear: () {},
                     ),
                   ),

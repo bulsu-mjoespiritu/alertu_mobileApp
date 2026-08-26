@@ -258,6 +258,23 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
               final data = profileSnapshot.data;
               final docExists = data != null;
 
+              // Email/password users must verify before any profile routing.
+              // The OTP flow persists this state in Firestore; Firebase's native
+              // flag is also accepted for accounts verified outside the app.
+              final usesPasswordProvider = currentUser.providerData.any(
+                    (provider) => provider.providerId == 'password',
+              );
+              final firestoreEmailVerified = data?['emailVerified'] == true;
+              final isEmailVerified = currentUser.emailVerified || firestoreEmailVerified;
+              if (usesPasswordProvider && !isEmailVerified) {
+                if (_isOnHomepage) {
+                  _leaveCurrentSocketRooms();
+                  _isOnHomepage = false;
+                  _updatePresence(isActive: false);
+                }
+                return const EmailSendingScreen();
+              }
+
               // 🚫 ACCOUNT DISABLED CHECK
               final bool isDisabledFlag = data?['isDisabled'] == true;
               final String statusStr = data?['status']?.toString().trim().toLowerCase() ?? '';
@@ -317,15 +334,7 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
                 );
               }
 
-              // RULE 3: Email Verification Screen for self-registered users
-              if (!currentUser.emailVerified && !docExists) {
-                if (_isOnHomepage) {
-                  _leaveCurrentSocketRooms();
-                  _isOnHomepage = false;
-                  _updatePresence(isActive: false);
-                }
-                return const EmailSendingScreen();
-              }
+              // Email verification is enforced above before profile routing.
 
               // RULE 4: Missing profile details -> Complete Profile Screen
               if (_isOnHomepage) {

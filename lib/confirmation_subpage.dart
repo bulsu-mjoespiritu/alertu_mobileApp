@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' as libre;
 import 'package:shimmer/shimmer.dart';
 import 'package:video_player/video_player.dart';
-import 'feedback_page.dart';
+import 'homepage.dart';
 
 class ConfirmationSubpage extends StatefulWidget {
   final String reportId;
@@ -344,11 +344,12 @@ class _ConfirmationSubpageState extends State<ConfirmationSubpage> {
                           ),
                         ),
                         onPressed: () {
-                          Navigator.pushReplacement(
+                          Navigator.pushAndRemoveUntil(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => FeedbackPage(reportId: widget.reportId),
+                              builder: (context) => const Homepage(),
                             ),
+                                (route) => false,
                           );
                         },
                         child: const Text(

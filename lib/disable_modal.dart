@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:alertu_flutter/services/socket.dart';
-import 'package:alertu_flutter/login.dart'; // 👈 ADD THIS IMPORT
+import 'package:alertu_flutter/login.dart';
 
 class DisableModal extends StatelessWidget {
   final bool isDialog;
@@ -24,29 +24,31 @@ class DisableModal extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     Widget cardContent = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: Colors.red.shade50,
+            color: isDark ? Colors.red.shade900.withOpacity(0.3) : Colors.red.shade50,
             shape: BoxShape.circle,
           ),
           child: Icon(
             Icons.block_rounded,
             size: 48,
-            color: Colors.red.shade700,
+            color: isDark ? Colors.red.shade400 : Colors.red.shade700,
           ),
         ),
         const SizedBox(height: 20),
-        const Text(
+        Text(
           "Account Deactivated",
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.bold,
-            color: Colors.black87,
+            color: isDark ? Colors.white : Colors.black87,
           ),
         ),
         const SizedBox(height: 12),
@@ -55,7 +57,7 @@ class DisableModal extends StatelessWidget {
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 14,
-            color: Colors.grey.shade700,
+            color: isDark ? Colors.grey.shade400 : Colors.grey.shade700,
             height: 1.4,
           ),
         ),
@@ -89,7 +91,7 @@ class DisableModal extends StatelessWidget {
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xff0d47a1),
+              backgroundColor: isDark ? const Color(0xff1565c0) : const Color(0xff0d47a1),
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 14),
               shape: RoundedRectangleBorder(
@@ -112,6 +114,7 @@ class DisableModal extends StatelessWidget {
     // 1. Used as Overlay Dialog (e.g., DisableModal.show(context))
     if (isDialog) {
       return AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
         ),
@@ -122,12 +125,13 @@ class DisableModal extends StatelessWidget {
 
     // 2. Used directly in Scaffold body inside Wrapper
     return Scaffold(
-      backgroundColor: Colors.grey.shade200,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.grey.shade200,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: Dialog(
+              backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
               elevation: 6,
               insetPadding: EdgeInsets.zero,
               shape: RoundedRectangleBorder(

@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:alertu_flutter/emergency_contacts.dart';
+import 'package:alertu_flutter/homepage.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:alertu_flutter/wrapper.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -334,10 +335,18 @@ class _EmailSendingScreenState extends ConsumerState<EmailSendingScreen>
       final int statusCode = result['_statusCode'] ?? 500;
 
       if (statusCode == 200 && (result['success'] == true || result['status'] == 'success')) {
+        final verifiedUser = FirebaseAuth.instance.currentUser;
+        if (verifiedUser != null) {
+          await FirebaseFirestore.instance.collection('citizens').doc(verifiedUser.uid).set(
+            {'emailVerified': true},
+            SetOptions(merge: true),
+          );
+          await verifiedUser.reload();
+        }
         if (mounted) {
           _showSnackBar("Verified", "Email verified successfully!");
           Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => const EmergencyContactsScreen()),
+            MaterialPageRoute(builder: (_) => const Homepage()),
                 (route) => false,
           );
         }

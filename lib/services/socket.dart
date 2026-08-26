@@ -49,7 +49,7 @@ class SocketService {
   static String _sanitizeOriginUrl(String rawUrl) {
     try {
       final uri = Uri.parse(rawUrl);
-      // Construct clean scheme + host (e.g., https://alertu-server.onrender.com)
+      // Construct clean scheme + host (e.g., https://alertu-server-production.up.railway.app)
       // Standard ports (80/443) or omitted ports will be clean without :0
       if (uri.hasPort && uri.port != 0 && uri.port != 80 && uri.port != 443) {
         return '${uri.scheme}://${uri.host}:${uri.port}';

@@ -72,7 +72,7 @@ class _MapSearchBarState extends State<MapSearchBar>
 
     _debounceTimer = Timer(const Duration(milliseconds: 420), () async {
       try {
-        final results = await _queryNominatim(query);
+        final results = await _queryPhoton(query);
         if (!mounted || requestId != _requestSequence) return;
 
         setState(() {
@@ -92,16 +92,17 @@ class _MapSearchBarState extends State<MapSearchBar>
     });
   }
 
-  Future<List<_MapSearchResult>> _queryNominatim(String query) async {
+  Future<List<_MapSearchResult>> _queryPhoton(String query) async {
+    // Keep the request broadly compatible with the public Photon instance.
+    // Results are still restricted to the current map area below by
+    // _isInsideSearchBounds(), so no bbox is required in the network request.
     final uri = Uri.https(
-      'nominatim.openstreetmap.org',
-      '/search',
+      'photon.komoot.io',
+      '/api/',
       <String, String>{
         'q': query,
-        'format': 'jsonv2',
         'limit': '8',
-        'addressdetails': '1',
-        'countrycodes': 'ph',
+        'countrycode': 'PH',
       },
     );
 
@@ -113,26 +114,54 @@ class _MapSearchBarState extends State<MapSearchBar>
       },
     ).timeout(const Duration(seconds: 8));
 
-    if (response.statusCode != 200) {
-      throw Exception('Nominatim returned ${response.statusCode}');
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      debugPrint('Photon response ${response.statusCode}: ${response.body}');
+      throw Exception('Photon returned ${response.statusCode}');
     }
 
     final decoded = jsonDecode(response.body);
-    if (decoded is! List) return const [];
+    if (decoded is! Map) return const [];
+    final features = decoded['features'];
+    if (features is! List) return const [];
 
     final results = <_MapSearchResult>[];
-    for (final item in decoded) {
-      if (item is! Map) continue;
-      final lat = double.tryParse('${item['lat']}');
-      final lon = double.tryParse('${item['lon']}');
-      final name = '${item['display_name'] ?? ''}'.trim();
-      if (lat == null || lon == null || name.isEmpty) continue;
+    for (final feature in features) {
+      if (feature is! Map) continue;
+      final geometry = feature['geometry'];
+      final rawCoordinates = geometry is Map ? geometry['coordinates'] : null;
+      if (rawCoordinates is! List || rawCoordinates.length < 2) continue;
+
+      // Photon GeoJSON coordinates are [longitude, latitude].
+      final lon = double.tryParse('${rawCoordinates[0]}');
+      final lat = double.tryParse('${rawCoordinates[1]}');
+      if (lat == null || lon == null) continue;
+
+      final rawProperties = feature['properties'];
+      final properties = rawProperties is Map
+          ? rawProperties
+          : const <String, dynamic>{};
+
+      String property(String key) => '${properties[key] ?? ''}'.trim();
+
+      final displayParts = <String>[
+        property('name'),
+        property('housenumber'),
+        property('street'),
+        property('district'),
+        property('city'),
+        property('state'),
+        property('postcode'),
+        property('country'),
+      ].where((part) => part.isNotEmpty).toList();
+
+      final displayName = displayParts.join(', ');
+      if (displayName.isEmpty) continue;
 
       final coordinates = LatLng(lat, lon);
       if (!_isInsideSearchBounds(coordinates)) continue;
       results.add(_MapSearchResult(
         coordinates: coordinates,
-        displayName: name,
+        displayName: displayName,
       ));
     }
     return results;

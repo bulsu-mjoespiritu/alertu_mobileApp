@@ -5,8 +5,8 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class ApiService {
-  // 🌐 Production Render Backend URL (appended with /api)
-  static String _baseUrl = 'https://alertu-server.onrender.com/api';
+  // 🌐 Production Railway Backend URL (appended with /api)
+  static String _baseUrl = 'https://alertu-server-production.up.railway.app/api';
 
   static String get baseUrl => _baseUrl;
 
@@ -23,9 +23,9 @@ class ApiService {
 
   /// Explicitly sets or verifies backend initialization
   static Future<void> initBackend() async {
-    // Directly points to Render Production Backend
-    _baseUrl = 'https://alertu-server.onrender.com/api';
-    print('🎉 Connected to Render Node.js backend at: $_baseUrl');
+    // Directly points to Railway Production Backend
+    _baseUrl = 'https://alertu-server-production.up.railway.app/api';
+    print('🎉 Connected to Railway Node.js backend at: $_baseUrl');
   }
 
   // ==========================================

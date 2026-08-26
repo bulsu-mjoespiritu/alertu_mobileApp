@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:alertu_flutter/email_sending.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import 'forgot.dart';
@@ -150,8 +151,28 @@ class _LoginState extends ConsumerState<Login> {
         password: password.text,
       );
 
-      if (userCredential.user != null) {
-        await _ensureCitizenProfileExists(userCredential.user!);
+      final signedInUser = userCredential.user;
+      if (signedInUser != null) {
+        await signedInUser.reload();
+        final refreshedUser = FirebaseAuth.instance.currentUser;
+        final citizenSnapshot = await FirebaseFirestore.instance
+            .collection('citizens')
+            .doc((refreshedUser ?? signedInUser).uid)
+            .get();
+        final firestoreEmailVerified = citizenSnapshot.data()?['emailVerified'] == true;
+
+        // Email/password accounts must verify before profile creation or app access.
+        if (refreshedUser != null && !refreshedUser.emailVerified && !firestoreEmailVerified) {
+          if (mounted) {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const EmailSendingScreen()),
+                  (route) => false,
+            );
+          }
+          return;
+        }
+
+        await _ensureCitizenProfileExists(refreshedUser ?? signedInUser);
       }
 
       _showFeedback("Login successful!", type: 'success');
