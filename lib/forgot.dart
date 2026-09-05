@@ -72,26 +72,21 @@ class _ForgotState extends ConsumerState<Forgot> {
   // Real-time password strength evaluation algorithm
   void _evaluatePasswordStrength() {
     final text = _passwordController.text;
-    final uppercaseCount = text.replaceAll(RegExp(r'[^A-Z]'), '').length;
-    final specialCharCount = text.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
+    final hasValidLength = text.length >= 12 && text.length <= 20;
+    final hasUppercase = RegExp(r'[A-Z]').hasMatch(text);
+    final hasSpecialCharacter = RegExp(r'[!@#\$%\^&\*]').hasMatch(text);
 
-    if (text.length < 12) {
+    if (text.isEmpty || !hasValidLength || !hasUppercase || !hasSpecialCharacter) {
       setState(() {
         _strengthText = "Weak";
         _strengthColor = Colors.red;
         _strengthProgress = 0.33;
       });
-    } else if (text.length >= 15 && uppercaseCount == 1 && specialCharCount == 1) {
+    } else {
       setState(() {
         _strengthText = "Strong";
         _strengthColor = Colors.green;
         _strengthProgress = 1.0;
-      });
-    } else {
-      setState(() {
-        _strengthText = "Moderate";
-        _strengthColor = Colors.amber;
-        _strengthProgress = 0.66;
       });
     }
   }
@@ -252,6 +247,7 @@ class _ForgotState extends ConsumerState<Forgot> {
         ),
       ),
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         backgroundColor: const Color(0xFFF8FAFC),
         appBar: AppBar(
           backgroundColor: Colors.white,
@@ -284,9 +280,12 @@ class _ForgotState extends ConsumerState<Forgot> {
             : SafeArea(
           child: Center(
             child: SingleChildScrollView(
-              padding: EdgeInsets.symmetric(
-                horizontal: isTablet ? 32.0 : 20.0,
-                vertical: 24.0,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: EdgeInsets.fromLTRB(
+                isTablet ? 32.0 : 20.0,
+                24.0,
+                isTablet ? 32.0 : 20.0,
+                24.0 + MediaQuery.of(context).viewInsets.bottom,
               ),
               child: ConstrainedBox(
                 constraints: BoxConstraints(
@@ -478,15 +477,17 @@ class _ForgotState extends ConsumerState<Forgot> {
               ),
             ),
             validator: (v) {
-              if (v == null || v.isEmpty) return 'Password cannot be empty';
-              if (v.length < 15) return 'Password must be at least 15 characters total';
-
-              final uppercaseCount = v.replaceAll(RegExp(r'[^A-Z]'), '').length;
-              if (uppercaseCount != 1) return 'Must contain exactly 1 uppercase letter';
-
-              final specialCharCount = v.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
-              if (specialCharCount != 1) return 'Must contain exactly 1 special character';
-
+              final value = v ?? '';
+              if (value.isEmpty) return 'Password cannot be empty';
+              if (value.length < 12 || value.length > 20) {
+                return 'Password must be between 12 and 20 characters';
+              }
+              if (!RegExp(r'[A-Z]').hasMatch(value)) {
+                return 'Password must contain at least 1 uppercase letter (A-Z)';
+              }
+              if (!RegExp(r'[!@#\$%\^&\*]').hasMatch(value)) {
+                return 'Password must contain at least 1 special character (!@#\$%^&*)';
+              }
               return null;
             },
           ),

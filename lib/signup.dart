@@ -487,6 +487,7 @@ class _SignUpState extends ConsumerState<SignUp> {
         ),
       ),
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         backgroundColor: Colors.white,
         appBar: AppBar(
           backgroundColor: Colors.white,
@@ -506,7 +507,13 @@ class _SignUpState extends ConsumerState<SignUp> {
 
               return Center(
                 child: SingleChildScrollView(
-                  padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 12.0),
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: EdgeInsets.fromLTRB(
+                    horizontalPadding,
+                    12.0,
+                    horizontalPadding,
+                    12.0 + MediaQuery.of(context).viewInsets.bottom + 24.0,
+                  ),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 400),
                     child: Form(

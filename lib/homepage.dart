@@ -35,6 +35,10 @@ import 'package:alertu_flutter/disable_modal.dart';
 
 // --- ANIMATION UI KIT UTILITIES ---
 import 'package:alertu_flutter/services/reportnotifs.dart';
+import 'package:alertu_flutter/services/nearbyreports_notifs.dart';
+import 'package:alertu_flutter/services/insidethereports_notifs.dart';
+import 'package:alertu_flutter/services/userexitedreport_notifs.dart';
+import 'components/showreportifinsideuser.dart';
 import 'components/slideup_animation.dart';
 import 'components/slidedown_animation.dart';
 import 'components/switch_to_navbar.dart';
@@ -173,6 +177,24 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
   Position? _currentPosition;
   bool _isRecentering = false;
   bool _isLoadingLocation = false;
+
+  Map<String, dynamic>? _insideHazardReport;
+  bool _isInsideHazardCardVisible = false;
+  bool _isInsideCardDismissAnimating = false;
+
+  StreamSubscription<Position>? _positionSubscription;
+  Timer? _locationAnimationTimer;
+  Timer? _cameraFollowScheduleTimer;
+  LatLng? _pendingCameraFollowLocation;
+  bool _cameraFollowInProgress = false;
+  LatLng? _displayedUserLocation;
+  LatLng? _targetUserLocation;
+  double _displayedAccuracy = 30.0;
+  double _targetAccuracy = 30.0;
+  int _locationAnimationToken = 0;
+  bool _locationRenderInProgress = false;
+  LatLng? _pendingUserLocation;
+  double _pendingUserAccuracy = 30.0;
   bool _isAccountDisabledChecked = false; // Flag to prevent multi-triggering modal
 
   Timer? _liveAccountSyncTimer;
@@ -430,13 +452,21 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
       }
     });
 
-    Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10)
-    ).listen((pos) async {
-      if (!mounted || mapController == null) return;
-      setState(() => _currentPosition = pos);
-      await _renderUserLocationLayer(LatLng(pos.latitude, pos.longitude), pos.accuracy);
-    });
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 2,
+      ),
+    ).listen(
+      _onPositionUpdate,
+      onError: (Object error) {
+        debugPrint('Location stream error: $error');
+      },
+    );
+
+    // Start the nearby notifier once. It reuses the shared notification setup
+    // and receives positions from this same live GPS stream.
+    unawaited(_startNearbyReportNotifications());
   }
 
   /// Verifies with backend or Firebase whether account is deactivated
@@ -478,6 +508,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     try {
       _styleLoaded = false;
       _isPulseLayerRendered = false;
+      _userLocationSymbol = null;
       _incidentLayersInitialized = false;
       _incidentFadeOpacity = 1.0;
 
@@ -508,6 +539,14 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     _incidentTransitionController?.stop();
     _incidentTransitionController?.dispose();
     _liveAccountSyncTimer?.cancel();
+    _positionSubscription?.cancel();
+    unawaited(nearbyReportsNotifService.stopListening());
+    unawaited(insideReportsNotifService.stopListening());
+    unawaited(userExitedReportNotifsService.stopListening());
+    _locationAnimationTimer?.cancel();
+    _cameraFollowScheduleTimer?.cancel();
+    _pendingCameraFollowLocation = null;
+    _locationAnimationToken++;
     _notificationsTabVisibility.dispose();
     super.dispose();
   }
@@ -578,6 +617,9 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
             _incidentReports.insert(0, newReport);
           }
         });
+
+        // Keep nearby notification geometry synchronized with live report updates.
+        _syncIncidentNotificationReports();
 
         // 1. Render updated geometries with a native map-layer fade/pop-in.
         // Awaiting the source update ensures the transition starts after the
@@ -925,62 +967,377 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _renderUserLocationLayer(LatLng location, double accuracy) async {
-    // 1. Guard against unmounted state or null map controller
-    if (!mounted || mapController == null || !_styleLoaded || _isAccountDisabledChecked) return;
+  Future<void> _startNearbyReportNotifications() async {
+    try {
+      // Start both services sequentially so NotificationService is initialized
+      // only once and both services use the same live report dataset.
+      await nearbyReportsNotifService.startListening();
+      await insideReportsNotifService.startListening(
+        onEntered: _handleEnteredInsideReport,
+      );
+      await userExitedReportNotifsService.startListening(
+        onExited: _handleExitedIncident,
+      );
+      _syncIncidentNotificationReports();
 
-    int steps = 64;
+      final currentPosition = _currentPosition;
+      if (currentPosition != null) {
+        nearbyReportsNotifService.evaluateUserPosition(currentPosition);
+        insideReportsNotifService.evaluateUserPosition(currentPosition);
+        userExitedReportNotifsService.evaluateUserPosition(currentPosition);
+      }
+    } catch (error, stackTrace) {
+      debugPrint('❌ Incident notification startup failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
 
-    List<List<double>> outerRing = [];
-    double earthRadius = 6378137.0;
-    double latRad = location.latitude * (3.141592653589793 / 180.0);
-    double targetedAccuracyMeters = accuracy > 0 ? accuracy : 30.0;
+  void _syncIncidentNotificationReports() {
+    final reports = _incidentReports.whereType<Map<String, dynamic>>();
+    nearbyReportsNotifService.updateReports(reports);
+    insideReportsNotifService.updateReports(reports);
+    userExitedReportNotifsService.updateReports(reports);
+  }
 
-    for (int i = 0; i <= steps; i++) {
-      double theta = (i * 2 * 3.141592653589793) / steps;
-      double dLat = (targetedAccuracyMeters * math.cos(theta)) / earthRadius;
-      double dLng = (targetedAccuracyMeters * math.sin(theta)) / (earthRadius * math.cos(latRad));
+  Future<void> _handleEnteredInsideReport(
+      Map<String, dynamic> report,
+      double distanceMeters,
+      Position userPosition,
+      ) async {
+    if (!mounted || _isAccountDisabledChecked) return;
 
-      double pLat = location.latitude + (dLat * (180.0 / 3.141592653589793));
-      double pLng = location.longitude + (dLng * (180.0 / 3.141592653589793));
-      outerRing.add([pLng, pLat]);
+    final reportId = (report['id'] ??
+        report['_id'] ??
+        report['reportID'] ??
+        report['reportId'] ??
+        '')
+        .toString();
+
+    if (_isInsideHazardCardVisible &&
+        (_insideHazardReport?['id'] ??
+            _insideHazardReport?['_id'] ??
+            _insideHazardReport?['reportID'] ??
+            _insideHazardReport?['reportId'] ??
+            '')
+            .toString() ==
+            reportId) {
+      return;
     }
 
-    final Map<String, dynamic> accuracyGeoJson = {
-      "type": "FeatureCollection",
-      "features": [
-        {
-          "type": "Feature",
-          "geometry": {"type": "Polygon", "coordinates": [outerRing]},
-          "properties": {},
+    final LatLng userLocation = LatLng(
+      userPosition.latitude,
+      userPosition.longitude,
+    );
+    final double accuracy =
+    userPosition.accuracy > 0 ? userPosition.accuracy : 30.0;
+
+    // Guarantee that the exit service records the same GPS fix that caused
+    // the inside event, even if its startup raced the first location update.
+    userExitedReportNotifsService.evaluateUserPosition(userPosition);
+
+    // Display the card immediately, then synchronize the marker and camera to
+    // this exact GPS coordinate. The service has already gated this event to
+    // one entry per report, so repeated GPS fixes cannot reopen the card.
+    setState(() {
+      _insideHazardReport = Map<String, dynamic>.from(report);
+      _isInsideHazardCardVisible = true;
+      _isInfoCardVisible = false;
+    });
+
+    await _snapMarkerAndRecenterCamera(userLocation, accuracy);
+    if (!mounted || mapController == null) return;
+
+    await mapController!.animateCamera(
+      CameraUpdate.newLatLngZoom(userLocation, 16.5),
+      duration: const Duration(milliseconds: 900),
+    );
+
+    debugPrint(
+      '🚨 Inside hazard card shown for $reportId '
+          '(${distanceMeters.round()}m from boundary).',
+    );
+  }
+
+  Future<void> _handleExitedIncident(
+      Map<String, dynamic> report,
+      double distanceMeters,
+      Position userPosition,
+      ) async {
+    final exitedId = (report['id'] ??
+        report['_id'] ??
+        report['reportID'] ??
+        report['reportId'] ??
+        '')
+        .toString();
+
+    // Re-arm this report's inside notification gate. This is per-report, so
+    // other active incident cards are not affected.
+    insideReportsNotifService.clearReportInsideState(exitedId);
+
+    if (!mounted || !_isInsideHazardCardVisible) return;
+    final visibleId = (_insideHazardReport?['id'] ??
+        _insideHazardReport?['_id'] ??
+        _insideHazardReport?['reportID'] ??
+        _insideHazardReport?['reportId'] ??
+        '')
+        .toString();
+
+    // Only close the card belonging to the report that was exited. A visible
+    // card for another incident must not disappear unexpectedly.
+    if (exitedId.isNotEmpty && visibleId.isNotEmpty && exitedId != visibleId) {
+      return;
+    }
+
+    await _dismissInsideHazardCardAnimated();
+    debugPrint(
+      '🚪 Inside hazard card closed after exiting $exitedId '
+          '(${distanceMeters.round()}m outside boundary).',
+    );
+  }
+
+  Future<void> _dismissInsideHazardCardAnimated() async {
+    if (!mounted || _isInsideCardDismissAnimating) return;
+    _isInsideCardDismissAnimating = true;
+    setState(() => _isInsideHazardCardVisible = false);
+    await Future<void>.delayed(const Duration(milliseconds: 520));
+    if (mounted) {
+      setState(() {
+        _insideHazardReport = null;
+        _isInsideCardDismissAnimating = false;
+      });
+    }
+  }
+
+  void _dismissInsideHazardCard() {
+    unawaited(_dismissInsideHazardCardAnimated());
+  }
+
+  void _onPositionUpdate(Position position) {
+    if (!mounted) return;
+
+    nearbyReportsNotifService.evaluateUserPosition(position);
+    insideReportsNotifService.evaluateUserPosition(position);
+    // Keep exit detection synchronized with every live GPS fix after entry.
+    userExitedReportNotifsService.evaluateUserPosition(position);
+
+    final LatLng nextLocation = LatLng(position.latitude, position.longitude);
+    final double nextAccuracy = position.accuracy > 0 ? position.accuracy : 30.0;
+
+    _currentPosition = position;
+    _targetUserLocation = nextLocation;
+    _targetAccuracy = nextAccuracy;
+
+    final LatLng? currentLocation = _displayedUserLocation;
+    if (currentLocation == null || mapController == null || !_styleLoaded) {
+      _displayedUserLocation = nextLocation;
+      _displayedAccuracy = nextAccuracy;
+      _queueUserLocationRender(nextLocation, nextAccuracy);
+      return;
+    }
+
+    _animateUserLocation(
+      currentLocation,
+      nextLocation,
+      _displayedAccuracy,
+      nextAccuracy,
+    );
+  }
+
+  void _animateUserLocation(
+      LatLng from,
+      LatLng to,
+      double fromAccuracy,
+      double toAccuracy,
+      ) {
+    _locationAnimationToken++;
+    final int token = _locationAnimationToken;
+    _locationAnimationTimer?.cancel();
+
+    final double distanceMeters = Geolocator.distanceBetween(
+      from.latitude,
+      from.longitude,
+      to.latitude,
+      to.longitude,
+    );
+    final int durationMs = distanceMeters < 3
+        ? 350
+        : (distanceMeters * 45).clamp(450, 1400).round();
+    final DateTime startedAt = DateTime.now();
+
+    _locationAnimationTimer = Timer.periodic(
+      const Duration(milliseconds: 33),
+          (timer) {
+        if (!mounted || token != _locationAnimationToken) {
+          timer.cancel();
+          return;
         }
-      ]
+
+        final double elapsedMs =
+            DateTime.now().difference(startedAt).inMicroseconds / 1000.0;
+        final double linearT = (elapsedMs / durationMs).clamp(0.0, 1.0);
+        final double t = Curves.easeOutCubic.transform(linearT);
+
+        final LatLng interpolated = LatLng(
+          from.latitude + ((to.latitude - from.latitude) * t),
+          from.longitude + ((to.longitude - from.longitude) * t),
+        );
+        final double interpolatedAccuracy =
+            fromAccuracy + ((toAccuracy - fromAccuracy) * t);
+
+        _displayedUserLocation = interpolated;
+        _displayedAccuracy = interpolatedAccuracy;
+        _queueUserLocationRender(interpolated, interpolatedAccuracy);
+
+        if (linearT >= 1.0) {
+          timer.cancel();
+          _displayedUserLocation = to;
+          _displayedAccuracy = toAccuracy;
+          _queueUserLocationRender(to, toAccuracy);
+        }
+      },
+    );
+  }
+
+  void _queueUserLocationRender(LatLng location, double accuracy) {
+    _pendingUserLocation = location;
+    _pendingUserAccuracy = accuracy;
+    _scheduleCameraFollow(location);
+    if (_locationRenderInProgress) return;
+    unawaited(_flushUserLocationRenderQueue());
+  }
+
+  // Keeps the map center synchronized with the same interpolated location used
+  // to render the blue user pinpoint. Throttling prevents camera-command buildup
+  // when the GPS stream produces frequent fixes or the user is moving quickly.
+  void _scheduleCameraFollow(LatLng location) {
+    _pendingCameraFollowLocation = location;
+    if (_cameraFollowScheduleTimer?.isActive ?? false) return;
+
+    _cameraFollowScheduleTimer = Timer(
+      const Duration(milliseconds: 70),
+          () {
+        _cameraFollowScheduleTimer = null;
+        unawaited(_flushCameraFollow());
+      },
+    );
+  }
+
+  Future<void> _flushCameraFollow() async {
+    if (_cameraFollowInProgress) return;
+    _cameraFollowInProgress = true;
+
+    try {
+      while (mounted && _pendingCameraFollowLocation != null) {
+        final controller = mapController;
+        if (controller == null || !_styleLoaded || _isAccountDisabledChecked) {
+          _pendingCameraFollowLocation = null;
+          break;
+        }
+
+        final location = _pendingCameraFollowLocation!;
+        _pendingCameraFollowLocation = null;
+
+        try {
+          await controller.animateCamera(
+            CameraUpdate.newLatLng(location),
+            duration: const Duration(milliseconds: 140),
+          );
+        } catch (error) {
+          debugPrint('Camera follow update skipped: $error');
+        }
+      }
+    } finally {
+      _cameraFollowInProgress = false;
+      if (mounted && _pendingCameraFollowLocation != null) {
+        unawaited(_flushCameraFollow());
+      }
+    }
+  }
+
+  Future<void> _flushUserLocationRenderQueue() async {
+    if (_locationRenderInProgress) return;
+    _locationRenderInProgress = true;
+    try {
+      while (mounted && _pendingUserLocation != null) {
+        final LatLng location = _pendingUserLocation!;
+        final double accuracy = _pendingUserAccuracy;
+        _pendingUserLocation = null;
+        await _renderUserLocationLayer(location, accuracy);
+      }
+    } finally {
+      _locationRenderInProgress = false;
+      if (mounted && _pendingUserLocation != null) {
+        unawaited(_flushUserLocationRenderQueue());
+      }
+    }
+  }
+
+  Future<void> _renderUserLocationLayer(
+      LatLng location,
+      double accuracy,
+      ) async {
+    if (!mounted ||
+        mapController == null ||
+        !_styleLoaded ||
+        _isAccountDisabledChecked) {
+      return;
+    }
+
+    const int steps = 64;
+    final List<List<double>> outerRing = <List<double>>[];
+    const double earthRadius = 6378137.0;
+    final double latRad = location.latitude * (math.pi / 180.0);
+    final double radius = accuracy > 0 ? accuracy : 30.0;
+
+    for (int i = 0; i <= steps; i++) {
+      final double theta = (i * 2 * math.pi) / steps;
+      final double dLat = (radius * math.cos(theta)) / earthRadius;
+      final double dLng =
+          (radius * math.sin(theta)) / (earthRadius * math.cos(latRad));
+      final double pLat = location.latitude + (dLat * (180.0 / math.pi));
+      final double pLng = location.longitude + (dLng * (180.0 / math.pi));
+      outerRing.add(<double>[pLng, pLat]);
+    }
+
+    final Map<String, dynamic> accuracyGeoJson = <String, dynamic>{
+      'type': 'FeatureCollection',
+      'features': <Map<String, dynamic>>[
+        <String, dynamic>{
+          'type': 'Feature',
+          'geometry': <String, dynamic>{
+            'type': 'Polygon',
+            'coordinates': <List<List<double>>>[outerRing],
+          },
+          'properties': <String, dynamic>{},
+        },
+      ],
     };
 
     try {
-      // Platform channel call guarded against plugin disconnections
-      await mapController?.setGeoJsonSource("user-accuracy-source", accuracyGeoJson);
+      final controller = mapController;
+      if (controller == null || !mounted || _isAccountDisabledChecked) return;
 
-      if (_userLocationSymbol != null) {
-        try {
-          await mapController?.removeSymbol(_userLocationSymbol!);
-        } catch (_) {}
-      }
+      await controller.setGeoJsonSource('user-accuracy-source', accuracyGeoJson);
 
-      if (mounted && !_isAccountDisabledChecked) {
-        _userLocationSymbol = await mapController?.addSymbol(
+      if (_userLocationSymbol == null) {
+        _userLocationSymbol = await controller.addSymbol(
           SymbolOptions(
-              geometry: location,
-              iconImage: "user-blue-dot",
-              iconSize: 1.5,
-              iconAnchor: "center"
+            geometry: location,
+            iconImage: 'user-blue-dot',
+            iconSize: 1.5,
+            iconAnchor: 'center',
           ),
+        );
+      } else {
+        await controller.updateSymbol(
+          _userLocationSymbol!,
+          SymbolOptions(geometry: location),
         );
       }
     } on MissingPluginException catch (e) {
-      debugPrint("MapLibre channel detached safely: $e");
+      debugPrint('MapLibre channel detached safely: $e');
     } catch (e) {
-      debugPrint("Error updating user tracking layers: $e");
+      debugPrint('Error updating user tracking layers: $e');
     }
   }
 
@@ -1055,6 +1412,8 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
             _incidentReports = List<Map<String, dynamic>>.from(resData);
           }
         });
+
+        _syncIncidentNotificationReports();
         _renderIncidentGeometries();
       }
     } catch (e) {
@@ -1356,24 +1715,58 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     return Geolocator.distanceBetween(point.latitude, point.longitude, center.latitude, center.longitude) <= radiusMeters;
   }
 
+  Future<void> _snapMarkerAndRecenterCamera(
+      LatLng location,
+      double accuracy,
+      ) async {
+    // Cancel any in-progress marker interpolation first. Otherwise the marker
+    // can continue moving while the camera is animating to its old coordinate.
+    _locationAnimationToken++;
+    _locationAnimationTimer?.cancel();
+
+    _displayedUserLocation = location;
+    _displayedAccuracy = accuracy;
+    _targetUserLocation = location;
+    _targetAccuracy = accuracy;
+    _pendingUserLocation = location;
+    _pendingUserAccuracy = accuracy;
+
+    if (!_locationRenderInProgress) {
+      await _flushUserLocationRenderQueue();
+    } else {
+      while (mounted && _locationRenderInProgress) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+      }
+      if (mounted && _pendingUserLocation != null) {
+        await _flushUserLocationRenderQueue();
+      }
+    }
+  }
+
   Future<void> _initializeUserLocation() async {
-    if (_isRecentering) return;
+    if (_isRecentering || mapController == null || !mounted) return;
     setState(() => _isRecentering = true);
 
     try {
-      var status = await Permission.location.status;
-      if (status.isDenied || status.isRestricted) { status = await Permission.location.request(); }
+      Position? position = _currentPosition;
+      position ??= await CenterandFixTheViewIncidents.getSafeUserPositionFallback();
+      if (!mounted || mapController == null) return;
 
-      Position position = await CenterandFixTheViewIncidents.getSafeUserPositionFallback();
+      _currentPosition = position;
+      final LatLng targetLocation = LatLng(position.latitude, position.longitude);
+      final double targetAccuracy = position.accuracy > 0 ? position.accuracy : 30.0;
 
-      if (mounted) {
-        LatLng userLatLng = LatLng(position.latitude, position.longitude);
-        setState(() => _currentPosition = position);
-        await mapController?.animateCamera(CameraUpdate.newLatLngZoom(userLatLng, 15.0), duration: const Duration(milliseconds: 800));
-        await _renderUserLocationLayer(userLatLng, position.accuracy);
-      }
+      // Snap the displayed marker first, then animate the camera to that exact
+      // same coordinate. This guarantees the circle is at the screen center.
+      await _snapMarkerAndRecenterCamera(targetLocation, targetAccuracy);
+
+      if (!mounted || mapController == null) return;
+      await mapController!.animateCamera(
+        CameraUpdate.newLatLngZoom(targetLocation, 16.0),
+        duration: const Duration(milliseconds: 900),
+      );
     } catch (e) {
-      debugPrint("Critical Geo Exception: $e");
+      debugPrint('Critical Geo Exception: $e');
     } finally {
       if (mounted) setState(() => _isRecentering = false);
     }
@@ -1542,7 +1935,70 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                   ),
                 ),
 
-              if (_currentIndex == kNavPageHome && !_isInfoCardVisible)
+              if (_currentIndex == kNavPageHome &&
+                  (_isInsideHazardCardVisible || _insideHazardReport != null))
+                Positioned.fill(
+                  child: IgnorePointer(
+                    ignoring: !_isInsideHazardCardVisible,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 260),
+                      opacity: _isInsideHazardCardVisible ? 1.0 : 0.0,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _dismissInsideHazardCard,
+                        child: Container(
+                          color: Colors.black.withOpacity(0.10),
+                          alignment: Alignment.bottomCenter,
+                          padding: EdgeInsets.only(
+                            left: isCompact ? 12 : 16,
+                            right: isCompact ? 12 : 16,
+                            bottom: 16 + bottomPadding,
+                          ),
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () {},
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 520),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              transitionBuilder: (child, animation) {
+                                final slide = Tween<Offset>(
+                                  begin: const Offset(0, 0.18),
+                                  end: Offset.zero,
+                                ).animate(animation);
+                                return FadeTransition(
+                                  opacity: animation,
+                                  child: SlideTransition(
+                                    position: slide,
+                                    child: child,
+                                  ),
+                                );
+                              },
+                              child: _isInsideHazardCardVisible &&
+                                  _insideHazardReport != null
+                                  ? ShowReportIfInsideUserCard(
+                                key: ValueKey(
+                                  _insideHazardReport!['id'] ??
+                                      _insideHazardReport!['_id'] ??
+                                      _insideHazardReport!['reportID'],
+                                ),
+                                report: _insideHazardReport!,
+                                onClose: _dismissInsideHazardCard,
+                              )
+                                  : const SizedBox.shrink(
+                                key: ValueKey('inside-card-hidden'),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+              if (_currentIndex == kNavPageHome &&
+                  !_isInfoCardVisible &&
+                  !_isInsideHazardCardVisible)
                 Positioned(
                   left: isCompact ? 12 : 16,
                   right: isCompact ? 12 : 16,
@@ -1596,7 +2052,10 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                             children: [
                               MapLegendsButton(onPressed: _showMapLegendsModal),
                               const SizedBox(height: 12),
-                              UserPinpointButton(onPressed: _initializeUserLocation),
+                              UserPinpointButton(
+                                onPressed: _initializeUserLocation,
+                                isLoading: _isRecentering,
+                              ),
                               const SizedBox(height: 12),
                               const SummaryReport_Button(),
                             ],
@@ -1612,7 +2071,9 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                 curve: Curves.easeInOutCubic,
                 left: 0,
                 right: 0,
-                bottom: _isInfoCardVisible ? -100 : 0,
+                bottom: (_isInfoCardVisible || _isInsideHazardCardVisible)
+                    ? -100
+                    : 0,
                 child: SwitchToNavbar(
                   child: CustomNavigationBar(
                     currentIndex: _currentIndex,

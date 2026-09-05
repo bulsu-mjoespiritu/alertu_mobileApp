@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'api_service.dart';
@@ -183,21 +185,43 @@ class SocketService {
     }
   }
 
-  /// Registers user, role, and citizen ID mapping on backend socket instance
+  /// Registers the authenticated user in every raw room name used by the backend.
+  /// The Node notification relay emits to authUid and citizenID directly.
   static void registerUserRoom(String uid, [String? citizenId, String? role]) {
-    _activeUserId = uid;
-    _activeCitizenId = citizenId;
+    final cleanUid = uid.trim();
+    final cleanCitizenId = (citizenId ?? '').trim();
+
+    if (cleanUid.isEmpty) {
+      debugPrint('⚠️ Cannot register socket room: Firebase UID is empty.');
+      return;
+    }
+
+    _activeUserId = cleanUid;
+    _activeCitizenId = cleanCitizenId.isEmpty ? null : cleanCitizenId;
     _activeRole = role ?? 'citizen';
 
-    final payload = {
-      'uid': uid,
-      'authUid': uid,
-      'citizenID': citizenId ?? uid,
-      'cid': citizenId ?? uid,
+    final rooms = <String>{
+      cleanUid,
+      if (cleanCitizenId.isNotEmpty) cleanCitizenId,
+    };
+    _activeRooms.addAll(rooms);
+
+    final payload = <String, dynamic>{
+      'uid': cleanUid,
+      'authUid': cleanUid,
+      'citizenID': cleanCitizenId.isNotEmpty ? cleanCitizenId : cleanUid,
+      'cid': cleanCitizenId.isNotEmpty ? cleanCitizenId : cleanUid,
       'role': _activeRole,
+      'rooms': rooms.toList(),
     };
 
     emit('register_user', payload);
+
+    // Explicitly join the exact raw rooms targeted by Node.
+    for (final room in rooms) {
+      emit('join_room', room);
+      debugPrint('✅ Requested notification room join: $room');
+    }
   }
 
   /// Generic Room Joining & Leaving
@@ -541,7 +565,26 @@ class SocketService {
   }
 
   static void on(String event, Function(dynamic data) handler) {
-    _socket?.on(event, handler);
+    final socket = _socket;
+
+    if (socket == null) {
+      debugPrint('⚠️ Cannot listen for "$event": socket is not initialized.');
+      return;
+    }
+
+    socket.on(event, (rawData) {
+      dynamic normalizedData = rawData;
+
+      if (rawData is String) {
+        try {
+          normalizedData = jsonDecode(rawData);
+        } catch (error) {
+          debugPrint('⚠️ Could not decode "$event" payload: $error');
+        }
+      }
+
+      handler(normalizedData);
+    });
   }
 
   static void off(String event) {

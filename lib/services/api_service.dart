@@ -33,12 +33,16 @@ class ApiService {
   // ==========================================
 
   /// Sends online/offline state change to Node.js backend REST route
-  static Future<bool> updateUserPresence({required bool isActive}) async {
+  static Future<bool> updateUserPresence({
+    required bool isActive,
+    String? uidOverride,
+    String? citizenIdOverride,
+  }) async {
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
-      final token = await _getIdToken();
-      if (uid == null) return false;
+      final uid = uidOverride ?? FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null || uid.trim().isEmpty) return false;
 
+      final token = await _getIdToken();
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/update-presence'),
         headers: {
@@ -47,6 +51,8 @@ class ApiService {
         },
         body: jsonEncode({
           'uid': uid,
+          if (citizenIdOverride != null && citizenIdOverride.trim().isNotEmpty)
+            'citizenID': citizenIdOverride,
           'isActive': isActive,
           'lastActiveAt': DateTime.now().toIso8601String(),
         }),

@@ -10,6 +10,7 @@ import 'package:alertu_flutter/services/bubble_service.dart';
 // 🎵 Import Services
 import 'package:alertu_flutter/services/messagetone_service.dart';
 import 'package:alertu_flutter/services/notifmessage_service.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class SimpleChat extends StatefulWidget {
   final String? chatId;
@@ -200,7 +201,13 @@ class _SimpleChatState extends State<SimpleChat> with WidgetsBindingObserver {
             createdAt: createdAt,
             text: text,
           );
-        }).toList();
+        })
+            .toList()
+          ..sort((a, b) {
+            final aTime = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bTime = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return aTime.compareTo(bTime);
+          });
 
         if (_isInitialLoad) {
           _isInitialLoad = false;
@@ -343,10 +350,13 @@ class _SimpleChatState extends State<SimpleChat> with WidgetsBindingObserver {
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF121212) : Colors.white,
       appBar: AppBar(
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        foregroundColor: isDark ? Colors.white : Colors.black87,
+        elevation: 0,
         title: Text(titleText),
         actions: [
           IconButton(
-            icon: const Icon(Icons.open_in_full_rounded, color: Colors.greenAccent),
+            icon: const Icon(LucideIcons.phoneCall, color: Colors.greenAccent),
             tooltip: 'Return to Call',
             onPressed: _maximizeCall,
           ),
@@ -359,15 +369,15 @@ class _SimpleChatState extends State<SimpleChat> with WidgetsBindingObserver {
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-              color: Colors.green.shade800,
-              child: const Row(
+              color: isDark ? const Color(0xFF14532D) : Colors.green.shade800,
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.call, color: Colors.white, size: 18),
-                  SizedBox(width: 8),
+                  const Icon(LucideIcons.phoneCall, color: Colors.white, size: 18),
+                  const SizedBox(width: 8),
                   Text(
                     'Ongoing Call Active • Tap to return to video',
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
                       fontSize: 13,
@@ -379,8 +389,19 @@ class _SimpleChatState extends State<SimpleChat> with WidgetsBindingObserver {
           ),
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
+                ? Center(
+              child: CircularProgressIndicator(
+                color: isDark ? Colors.greenAccent : Colors.green,
+              ),
+            )
                 : Chat(
+              theme: isDark
+                  ? chat_core.ChatTheme.dark()
+                  : chat_core.ChatTheme.light(),
+              backgroundColor: isDark
+                  ? const Color(0xFF121212)
+                  : Colors.white,
+
               chatController: _chatController,
               currentUserId: _currentUserId,
               onMessageSend: _handleMessageSend,

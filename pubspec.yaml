@@ -88,6 +88,7 @@ dependencies:
   adaptive_theme: ^3.7.2
   video_compress: ^3.1.2
   flutter_image_compress: ^2.5.1
+  wakelock_plus: ^1.7.0
 
 
 

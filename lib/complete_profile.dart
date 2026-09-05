@@ -21,68 +21,28 @@ class CompleteProfile extends ConsumerStatefulWidget {
 
 class _CompleteProfileState extends ConsumerState<CompleteProfile> {
   final _formKey = GlobalKey<FormState>();
-  late TextEditingController name;
   final TextEditingController address = TextEditingController();
-  final TextEditingController email = TextEditingController();
-  final TextEditingController password = TextEditingController();
-  final TextEditingController confirmPassword = TextEditingController();
 
   String completePhoneNumber = "";
   bool _isPhoneValid = false;
   bool _isDpaAccepted = false;
-  bool _obscurePassword = true;
-  bool _obscureConfirmPassword = true;
   final List<_SignupEmergencyContact> _emergencyContacts = <_SignupEmergencyContact>[];
   bool _contactsCompleted = false;
-
-  String _strengthText = 'Weak';
-  Color _strengthColor = Colors.red;
-  double _strengthProgress = 0.33;
 
   @override
   void initState() {
     super.initState();
-    name = TextEditingController(text: widget.user.displayName);
-    email.text = widget.user.email ?? '';
-    password.addListener(_evaluatePasswordStrength);
+
   }
 
   @override
   void dispose() {
-    name.dispose();
     address.dispose();
-    email.dispose();
-    password.dispose();
-    confirmPassword.dispose();
-    password.removeListener(_evaluatePasswordStrength);
+
     super.dispose();
   }
 
-  void _evaluatePasswordStrength() {
-    final text = password.text;
-    final uppercaseCount = text.replaceAll(RegExp(r'[^A-Z]'), '').length;
-    final specialCharCount = text.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
 
-    if (text.length < 12) {
-      setState(() {
-        _strengthText = 'Weak';
-        _strengthColor = Colors.red;
-        _strengthProgress = 0.33;
-      });
-    } else if (text.length >= 15 && uppercaseCount == 1 && specialCharCount == 1) {
-      setState(() {
-        _strengthText = 'Strong';
-        _strengthColor = Colors.green;
-        _strengthProgress = 1.0;
-      });
-    } else {
-      setState(() {
-        _strengthText = 'Moderate';
-        _strengthColor = Colors.amber;
-        _strengthProgress = 0.66;
-      });
-    }
-  }
 
   void _showSnackBar(String title, String message) {
     if (!mounted) return;
@@ -121,14 +81,16 @@ class _CompleteProfileState extends ConsumerState<CompleteProfile> {
     ref.read(completeProfileLoadingProvider.notifier).state = true;
 
     try {
-      String customProfileData = "${name.text.trim()}||$completePhoneNumber||${address.text.trim()}";
+      final googleDisplayName = widget.user.displayName?.trim() ?? '';
+      final customProfileData = "$googleDisplayName||$completePhoneNumber||${address.text.trim()}";
       await widget.user.updateDisplayName(customProfileData);
       await widget.user.reload();
 
       await FirebaseFirestore.instance.collection('citizens').doc(widget.user.uid).set({
         'id': widget.user.uid,
-        'fullName': name.text.trim(),
+        'fullName': googleDisplayName,
         'email': widget.user.email?.trim() ?? '',
+
         'phoneNumber': completePhoneNumber,
         'zone': address.text.trim(),
         'status': 'Active',
@@ -439,6 +401,7 @@ class _CompleteProfileState extends ConsumerState<CompleteProfile> {
         ),
       ),
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         backgroundColor: Colors.white,
         appBar: AppBar(
           backgroundColor: Colors.white,
@@ -458,7 +421,13 @@ class _CompleteProfileState extends ConsumerState<CompleteProfile> {
 
               return Center(
                 child: SingleChildScrollView(
-                  padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 12.0),
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: EdgeInsets.fromLTRB(
+                    horizontalPadding,
+                    12.0,
+                    horizontalPadding,
+                    12.0 + MediaQuery.of(context).viewInsets.bottom + 24.0,
+                  ),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 400),
                     child: Form(
@@ -468,33 +437,11 @@ class _CompleteProfileState extends ConsumerState<CompleteProfile> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           const Text(
-                            'Create Account',
+                            'Complete Profile',
                             style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xff0d47a1)),
                           ),
                           const SizedBox(height: 24),
-                          TextFormField(
-                            controller: name,
-                            style: const TextStyle(color: Colors.black87),
-                            decoration: const InputDecoration(hintText: 'Full Name'),
-                            validator: (v) => (v == null || v.trim().length < 2) ? 'Provide a valid name' : null,
-                          ),
-                          const SizedBox(height: 14),
-                          TextFormField(
-                            controller: email,
-                            readOnly: true,
-                            showCursor: false,
-                            style: const TextStyle(color: Colors.black87),
-                            keyboardType: TextInputType.emailAddress,
-                            decoration: InputDecoration(
-                              hintText: 'Email Address',
-                              prefixIcon: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Image.asset('images/emailicon.png', height: 20, width: 20),
-                              ),
-                            ),
-                            validator: (v) => (v == null || !v.contains('@')) ? 'Provide a valid email address' : null,
-                          ),
-                          const SizedBox(height: 14),
+
                           IntlPhoneField(
                             style: const TextStyle(color: Colors.black87),
                             dropdownTextStyle: const TextStyle(color: Colors.black87),
@@ -523,77 +470,8 @@ class _CompleteProfileState extends ConsumerState<CompleteProfile> {
                             validator: (v) => (v == null || v.trim().isEmpty) ? 'Home address is required' : null,
                           ),
                           const SizedBox(height: 14),
-                          TextFormField(
-                            controller: password,
-                            style: const TextStyle(color: Colors.black87),
-                            obscureText: _obscurePassword,
-                            decoration: InputDecoration(
-                              hintText: 'Password',
-                              prefixIcon: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Image.asset('images/passwordicon.png', height: 20, width: 20),
-                              ),
-                              suffixIcon: IconButton(
-                                icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility, color: const Color(0xff0d47a1)),
-                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                              ),
-                            ),
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Password cannot be empty';
-                              if (v.length < 15) return 'Password must be at least 15 characters total';
-                              final uppercaseCount = v.replaceAll(RegExp(r'[^A-Z]'), '').length;
-                              if (uppercaseCount != 1) return 'Must contain exactly 1 uppercase letter';
-                              final specialCharCount = v.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
-                              if (specialCharCount != 1) return 'Must contain exactly 1 special character';
-                              return null;
-                            },
-                          ),
-                          const SizedBox(height: 8),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text('Password Strength:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                                  Text(
-                                    _strengthText,
-                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _strengthColor),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              LinearProgressIndicator(
-                                value: _strengthProgress,
-                                backgroundColor: Colors.grey.shade200,
-                                valueColor: AlwaysStoppedAnimation<Color>(_strengthColor),
-                                minHeight: 5,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-                          TextFormField(
-                            controller: confirmPassword,
-                            style: const TextStyle(color: Colors.black87),
-                            obscureText: _obscureConfirmPassword,
-                            decoration: InputDecoration(
-                              hintText: 'Confirm Password',
-                              prefixIcon: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Image.asset('images/passwordicon.png', height: 20, width: 20),
-                              ),
-                              suffixIcon: IconButton(
-                                icon: Icon(_obscureConfirmPassword ? Icons.visibility_off : Icons.visibility, color: const Color(0xff0d47a1)),
-                                onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                              ),
-                            ),
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Please confirm your password';
-                              if (v != password.text) return 'Passwords do not match';
-                              return null;
-                            },
-                          ),
                           const SizedBox(height: 20),
+
                           OutlinedButton.icon(
                             onPressed: isLoading ? null : _openEmergencyContacts,
                             icon: Icon(_contactsCompleted ? Icons.check_circle : Icons.contact_phone_outlined),

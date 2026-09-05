@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -99,7 +100,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
       });
     }
 
-    // ⚡ Initialize Socket.IO before registering listeners so events are not lost
+    // SocketService.on attaches to the live socket instance, so initialize
+    // the socket first and register page listeners immediately afterward.
     _initializeRealtimeNotifications();
   }
 
@@ -237,9 +239,19 @@ class _NotificationsPageState extends State<NotificationsPage> {
           : <String, dynamic>{};
 
       final dynamic metadataValue = eventData['metadata'];
-      final Map<String, dynamic> metadata = metadataValue is Map
-          ? Map<String, dynamic>.from(metadataValue)
-          : <String, dynamic>{};
+      Map<String, dynamic> metadata = <String, dynamic>{};
+      if (metadataValue is Map) {
+        metadata = Map<String, dynamic>.from(metadataValue);
+      } else if (metadataValue is String && metadataValue.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(metadataValue);
+          if (decoded is Map) {
+            metadata = Map<String, dynamic>.from(decoded);
+          }
+        } catch (_) {
+          debugPrint('⚠️ Invalid notification metadata JSON.');
+        }
+      }
 
       // 🔍 1. EXTRACT & INFER ACTION TYPE
       String action = (
@@ -320,7 +332,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
       // 🎉 Resolve approval before review matching. A verified event may
       // still contain stale IN_PROGRESS metadata.
-      final bool isApprovedAction = action == 'REPORT_VERIFIED' ||
+      final bool isApprovedAction = action == 'REPORT_APPROVED' ||
+          action == 'REPORT_VERIFIED' ||
           action == 'VERIFIED_REPORT_DISPATCH' ||
           action == 'DISPATCH_FINALIZED' ||
           action == 'DISPATCH_VERIFIED_INCIDENT' ||
@@ -402,7 +415,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
       // 🟢 ACTION 3: OPEN / ADVANCE VERIFICATION MODAL
       final bool isReviewAction = !isApprovedAction && !isRejectedAction &&
-          (action == 'OPEN_VERIFY_MODAL' ||
+          (action == 'REPORT_UNDER_REVIEW' ||
+              action == 'OPEN_VERIFY_MODAL' ||
               action == 'START_VERIFY_WORKFLOW' ||
               action == 'VERIFY_STEP_ADVANCE' ||
               action == 'UNDER_REVIEW' ||
@@ -533,12 +547,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
     };
 
     // 🔗 Register all real-time events emitted by Web Admin / Node Backend
+    SocketService.on('CITIZEN_NOTIFICATION', _socketEventListener!);
     SocketService.on('ADMIN_ACTION_EVENT', _socketEventListener!);
     SocketService.on('CITIZEN_REPORT_UPDATED', _socketEventListener!);
     SocketService.on('DISPATCH_VERIFIED_INCIDENT', _socketEventListener!);
   }
 
   void _cleanupSocketListeners() {
+    SocketService.off('CITIZEN_NOTIFICATION');
     SocketService.off('ADMIN_ACTION_EVENT');
     SocketService.off('CITIZEN_REPORT_UPDATED');
     SocketService.off('DISPATCH_VERIFIED_INCIDENT');

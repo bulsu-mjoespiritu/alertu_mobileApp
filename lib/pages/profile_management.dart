@@ -14,7 +14,6 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/io_client.dart';
 import '../services/socket.dart';
 import '../services/api_service.dart';
-import 'profile_pass_reset.dart';
 
 // --- CUSTOM UNSECURE CACHE MANAGER HELPER ---
 class CustomUnsecureCacheManager {
@@ -58,13 +57,15 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _zoneAddressController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
 
   String _completePhoneNumber = "";
 
   // User Profile Data & Auth Token
   String _uid = '';
   String _photoUrl = '';
+  String _savedPhotoUrl = '';
+  XFile? _pendingAvatarFile;
+  bool _pendingAvatarRemoval = false;
   String _initialEmail = '';
   String? _idToken;
 
@@ -84,7 +85,6 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
     _emailController.dispose();
     _phoneController.dispose();
     _zoneAddressController.dispose();
-    _passwordController.dispose();
     super.dispose();
   }
 
@@ -188,6 +188,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
         if (user.photoURL != null && user.photoURL!.isNotEmpty) {
           _photoUrl = _resolveFullUrl(user.photoURL!);
         }
+        _savedPhotoUrl = _photoUrl;
 
         _setupSocketListeners(_uid);
 
@@ -224,6 +225,9 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
             _completePhoneNumber = _phoneController.text;
             _zoneAddressController.text =
                 data?['zone'] ?? data?['zoneAddress'] ?? data?['location'] ?? 'Zone 1';
+            _savedPhotoUrl = _photoUrl;
+            _pendingAvatarFile = null;
+            _pendingAvatarRemoval = false;
             _isLoading = false;
           });
         } else if (mounted) {
@@ -241,6 +245,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
 
   // --- Modal Bottom Sheet Options for Avatar ---
   void _showAvatarOptions() {
+    if (!_isEditing || _isUploadingAvatar || _isSaving) return;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     showModalBottomSheet(
@@ -271,7 +276,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
                     _pickAndUploadAvatar();
                   },
                 ),
-                if (_photoUrl.isNotEmpty)
+                if (_photoUrl.isNotEmpty || _pendingAvatarFile != null)
                   ListTile(
                     leading: const Icon(LucideIcons.trash2, color: Colors.redAccent),
                     title: const Text(
@@ -291,8 +296,19 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
     );
   }
 
+  // --- Mark avatar for removal; the server changes only after Save Changes ---
+  void _deleteAvatar() {
+    if (!_isEditing || _isUploadingAvatar || _isSaving) return;
+    setState(() {
+      _pendingAvatarFile = null;
+      _pendingAvatarRemoval = true;
+      _photoUrl = '';
+    });
+    _showSnackBar('Preview Updated', 'Profile picture will be removed when you press Save Changes.');
+  }
+
   // --- Delete Profile Picture Route Call ---
-  Future<void> _deleteAvatar() async {
+  Future<void> _deleteAvatarOnServer() async {
     try {
       setState(() => _isUploadingAvatar = true);
 
@@ -354,20 +370,37 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           backgroundColor: const Color(0xFFC62828),
         );
       }
+      rethrow;
     }
   }
 
-  // --- Image Picker & Upload to Backend ---
+  // --- Image Picker: local preview only; server commit happens on Save Changes ---
   Future<void> _pickAndUploadAvatar() async {
     try {
-      final XFile? image = await _picker.pickImage(
+      final image = await _picker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 85,
         maxWidth: 1024,
         maxHeight: 1024,
       );
+      if (image == null || !mounted) return;
+      setState(() {
+        _pendingAvatarFile = image;
+        _pendingAvatarRemoval = false;
+      });
+      _showSnackBar('Preview Updated', 'Press Save Changes to apply the new profile picture.');
+    } catch (e) {
+      if (mounted) {
+        _showSnackBar('Preview Failed', e.toString().replaceAll('Exception: ', ''), backgroundColor: const Color(0xFFC62828));
+      }
+    }
+  }
 
-      if (image == null) return;
+  // --- Upload the pending avatar only during Save Changes ---
+  Future<void> _uploadPendingAvatar() async {
+    final image = _pendingAvatarFile;
+    if (image == null) return;
+    try {
 
       setState(() => _isUploadingAvatar = true);
 
@@ -463,10 +496,11 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
         setState(() => _isUploadingAvatar = false);
         _showSnackBar(
           "Upload Failed",
-          e.toString().replaceAll("Exception: ", ""),
+          e.toString().replaceAll('Exception: ', ''),
           backgroundColor: const Color(0xFFC62828),
         );
       }
+      rethrow;
     }
   }
 
@@ -489,21 +523,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
         throw Exception("User session not found. Please log in again.");
       }
 
-      final newEmail = _emailController.text.trim();
       final newFullName = _fullNameController.text.trim();
-      final enteredPassword = _passwordController.text.trim();
-
-      final AuthCredential credential = EmailAuthProvider.credential(
-        email: user.email!,
-        password: enteredPassword,
-      );
-      await user.reauthenticateWithCredential(credential);
-
-      final bool emailChanged = user.email!.toLowerCase() != newEmail.toLowerCase();
-      if (emailChanged) {
-        await user.verifyBeforeUpdateEmail(newEmail);
-      }
-
       if (user.displayName != newFullName) {
         await user.updateDisplayName(newFullName);
       }
@@ -515,7 +535,6 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
 
       final firestorePayload = {
         'fullName': newFullName,
-        'email': newEmail,
         'phoneNumber': finalPhoneNumber,
         'mobile': finalPhoneNumber,
         'zone': finalZone,
@@ -563,11 +582,16 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
             'fullName': newFullName,
             'phoneNumber': finalPhoneNumber,
             'zone': finalZone,
-            'email': newEmail,
           }),
         );
       } catch (backendErr) {
         debugPrint('⚠️ Backend API sync warning: $backendErr');
+      }
+
+      if (_pendingAvatarRemoval) {
+        await _deleteAvatarOnServer();
+      } else if (_pendingAvatarFile != null) {
+        await _uploadPendingAvatar();
       }
 
       try {
@@ -580,15 +604,14 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
         setState(() {
           _isSaving = false;
           _isEditing = false;
-          _initialEmail = newEmail;
-          _passwordController.clear();
+          _savedPhotoUrl = _photoUrl;
+          _pendingAvatarFile = null;
+          _pendingAvatarRemoval = false;
         });
 
         _showSnackBar(
           "Success",
-          emailChanged
-              ? "Profile updated! Verification email sent to $newEmail."
-              : "Profile updated successfully!",
+          "Profile updated successfully!",
           backgroundColor: const Color(0xFF2E7D32),
         );
       }
@@ -632,29 +655,6 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
     );
   }
 
-  void _navigateToPasswordReset() {
-    Navigator.push(
-      context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 350),
-        reverseTransitionDuration: const Duration(milliseconds: 300),
-        pageBuilder: (context, animation, secondaryAnimation) =>
-        const ProfilePassResetPage(),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final tween = Tween<Offset>(
-            begin: const Offset(1.0, 0.0),
-            end: Offset.zero,
-          ).chain(CurveTween(curve: Curves.easeInOutCubic));
-
-          return SlideTransition(
-            position: animation.drive(tween),
-            child: child,
-          );
-        },
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -665,6 +665,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
     final titleColor = isDark ? Colors.white : const Color(0xFF1E293B);
 
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       backgroundColor: bgColor,
       appBar: AppBar(
         elevation: 0,
@@ -686,10 +687,19 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
                 _isEditing ? LucideIcons.x : LucideIcons.pencil,
                 color: primaryColor,
               ),
-              onPressed: () {
+              onPressed: _isSaving ? null : () {
                 setState(() {
-                  _isEditing = !_isEditing;
-                  if (!_isEditing) _passwordController.clear();
+                  if (_isEditing) {
+                    _isEditing = false;
+                    _photoUrl = _savedPhotoUrl;
+                    _pendingAvatarFile = null;
+                    _pendingAvatarRemoval = false;
+                  } else {
+                    _isEditing = true;
+                    _pendingAvatarFile = null;
+                    _pendingAvatarRemoval = false;
+                    _photoUrl = _savedPhotoUrl;
+                  }
                 });
               },
             ),
@@ -705,10 +715,13 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 550),
                 child: SingleChildScrollView(
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 20,
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    20,
+                    20,
+                    20 + MediaQuery.of(context).viewInsets.bottom + 24,
                   ),
                   child: Column(
                     children: [
@@ -765,7 +778,13 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
                   child: SizedBox(
                     width: 92,
                     height: 92,
-                    child: CachedNetworkImage(
+                    child: _pendingAvatarFile != null
+                        ? Image.file(
+                      File(_pendingAvatarFile!.path),
+                      key: ValueKey(_pendingAvatarFile!.path),
+                      fit: BoxFit.cover,
+                    )
+                        : CachedNetworkImage(
                       key: ValueKey(_photoUrl),
                       imageUrl: _photoUrl.isNotEmpty ? _photoUrl : fallbackAvatar,
                       cacheManager: CustomUnsecureCacheManager.instance,
@@ -811,7 +830,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
                     ),
                   ),
                 ),
-              if (!_isUploadingAvatar)
+              if (_isEditing && !_isUploadingAvatar && !_isSaving)
                 Positioned(
                   bottom: 0,
                   right: 0,
@@ -870,29 +889,6 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
         ),
         _buildInfoCard(
           isDark: isDark,
-          icon: LucideIcons.lock,
-          color: const Color(0xff8860d0),
-          title: "Password",
-          value: "••••••••",
-          trailing: TextButton.icon(
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            icon: Icon(LucideIcons.keyRound, size: 14, color: primaryColor),
-            label: Text(
-              "Change",
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: primaryColor,
-              ),
-            ),
-            onPressed: _navigateToPasswordReset,
-          ),
-        ),
-        _buildInfoCard(
-          isDark: isDark,
           icon: LucideIcons.phone,
           color: const Color(0xff62b667),
           title: "Mobile Number",
@@ -910,26 +906,6 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
               : "Not set",
         ),
         const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          height: 48,
-          child: OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: primaryColor,
-              side: BorderSide(color: primaryColor, width: 1.2),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            icon: const Icon(LucideIcons.shieldCheck, size: 18),
-            label: const Text(
-              "Change Password",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            onPressed: _navigateToPasswordReset,
-          ),
-        ),
-        const SizedBox(height: 12),
         SizedBox(
           width: double.infinity,
           height: 50,
@@ -1022,8 +998,6 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
   }
 
   Widget _buildProfileEditForm(bool isDark) {
-    final bool isPasswordEntered = _passwordController.text.trim().isNotEmpty;
-
     final primaryButtonBg = isDark ? const Color(0xFF2563EB) : const Color(0xFF0D47A1);
     final disabledButtonBg = isDark ? const Color(0xFF334155) : Colors.grey.shade300;
     final disabledTextColor = isDark ? const Color(0xFF64748B) : Colors.grey[500];
@@ -1044,6 +1018,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           _buildFormFieldLabel("Full Name", isDark),
           TextFormField(
             controller: _fullNameController,
+            enabled: !_isSaving,
             style: TextStyle(color: isDark ? Colors.white : Colors.black),
             decoration: _buildInputDecoration(
               hint: 'Full Name',
@@ -1055,23 +1030,9 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           ),
           const SizedBox(height: 16),
 
-          _buildFormFieldLabel("Email Address", isDark),
-          TextFormField(
-            controller: _emailController,
-            keyboardType: TextInputType.emailAddress,
-            style: TextStyle(color: isDark ? Colors.white : Colors.black),
-            decoration: _buildInputDecoration(
-              hint: 'Email Address',
-              icon: LucideIcons.mail,
-              isDark: isDark,
-            ),
-            validator: (v) =>
-            (v == null || !v.contains('@')) ? 'Provide a valid email address' : null,
-          ),
-          const SizedBox(height: 16),
-
           _buildFormFieldLabel("Mobile Number", isDark),
           IntlPhoneField(
+            enabled: !_isSaving,
             initialValue: _phoneController.text,
             style: TextStyle(color: isDark ? Colors.white : Colors.black),
             dropdownTextStyle: TextStyle(color: isDark ? Colors.white : Colors.black),
@@ -1110,6 +1071,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           _buildFormFieldLabel("Home Address / Zone", isDark),
           TextFormField(
             controller: _zoneAddressController,
+            enabled: !_isSaving,
             style: TextStyle(color: isDark ? Colors.white : Colors.black),
             decoration: _buildInputDecoration(
               hint: 'Home Address',
@@ -1122,84 +1084,69 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           ),
           const SizedBox(height: 16),
 
-          _buildFormFieldLabel("Confirm Password (Required to save changes)", isDark),
-          TextFormField(
-            controller: _passwordController,
-            obscureText: true,
-            style: TextStyle(color: isDark ? Colors.white : Colors.black),
-            onChanged: (_) => setState(() {}),
-            decoration: _buildInputDecoration(
-              hint: 'Enter your password',
-              icon: LucideIcons.lock,
-              isDark: isDark,
-            ),
-            validator: (v) =>
-            (v == null || v.trim().isEmpty) ? 'Password is required to confirm changes' : null,
-          ),
           const SizedBox(height: 28),
 
-          Row(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: cancelTextColor,
-                      side: BorderSide(color: cancelBorderColor),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
+              SizedBox(
+                height: 48,
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: cancelTextColor,
+                    side: BorderSide(color: cancelBorderColor),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _isEditing = false;
-                        _passwordController.clear();
-                      });
-                    },
-                    child: const Text(
-                      "Cancel",
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
+                  ),
+                  onPressed: _isSaving ? null : () {
+                    setState(() {
+                      _isEditing = false;
+                      _photoUrl = _savedPhotoUrl;
+                      _pendingAvatarFile = null;
+                      _pendingAvatarRemoval = false;
+                    });
+                  },
+                  child: const Text(
+                    "Cancel",
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryButtonBg,
-                      disabledBackgroundColor: disabledButtonBg,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 48,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primaryButtonBg,
+                    disabledBackgroundColor: disabledButtonBg,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
                     ),
-                    icon: _isSaving
-                        ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
-                        : Icon(
-                      LucideIcons.save,
-                      color: isPasswordEntered ? Colors.white : disabledTextColor,
-                      size: 18,
-                    ),
-                    label: Text(
-                      _isSaving ? "Saving..." : "Save Changes",
-                      style: TextStyle(
-                        color: isPasswordEntered ? Colors.white : disabledTextColor,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    onPressed: (_isSaving || !isPasswordEntered) ? null : _saveProfile,
                   ),
+                  icon: _isSaving
+                      ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 2,
+                    ),
+                  )
+                      : Icon(
+                    LucideIcons.save,
+                    color: Colors.white,
+                    size: 18,
+                  ),
+                  label: Text(
+                    _isSaving ? "Saving..." : "Save Changes",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  onPressed: _isSaving ? null : _saveProfile,
                 ),
               ),
             ],

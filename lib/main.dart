@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+
 import 'package:alertu_flutter/wrapper.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:alertu_flutter/services/socket.dart';
@@ -13,6 +15,7 @@ import 'package:forui/forui.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:flex_color_scheme/flex_color_scheme.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 /// 🛡️ Custom HttpOverrides class to handle SSL Certificate verification
 /// for Railway endpoints and Backblaze B2 storage on devices/emulators missing root CAs.
@@ -83,10 +86,55 @@ Future<void> _initServicesInBackground() async {
   }
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   final AdaptiveThemeMode? savedThemeMode;
 
   const MyApp({super.key, this.savedThemeMode});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _setWakelockEnabled(true);
+  }
+
+  Future<void> _setWakelockEnabled(bool enabled) async {
+    try {
+      if (enabled) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+      debugPrint('🔒 Wakelock ${enabled ? 'enabled' : 'disabled'}');
+    } catch (error) {
+      // Wakelock must never prevent the app, GPS, or sockets from working.
+      debugPrint('⚠️ Wakelock update skipped: $error');
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    if (state == AppLifecycleState.resumed) {
+      _setWakelockEnabled(true);
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _setWakelockEnabled(false);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_setWakelockEnabled(false));
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -122,7 +170,7 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      initial: savedThemeMode ?? AdaptiveThemeMode.light,
+      initial: widget.savedThemeMode ?? AdaptiveThemeMode.light,
 
       // --- Builder integrating adaptive Material themes with ForUI ---
       builder: (theme, darkTheme) => MaterialApp(
@@ -133,10 +181,9 @@ class MyApp extends StatelessWidget {
           final isDark = AdaptiveTheme.of(context).mode.isDark;
           return FTheme(
             data: isDark ? FTheme.neutral.dark.touch : FTheme.neutral.light.touch,
-            child: MediaQuery(
-              data: MediaQuery.of(context).copyWith(viewInsets: EdgeInsets.zero),
-              child: child!,
-            ),
+            // Preserve Flutter's real MediaQuery.viewInsets so form screens
+            // can resize and scroll focused fields above the keyboard.
+            child: child!,
           );
         },
         debugShowCheckedModeBanner: false,

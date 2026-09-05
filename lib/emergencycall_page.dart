@@ -12,6 +12,7 @@ import 'package:alertu_flutter/services/callringtone_service.dart'; // Outgoing 
 import 'package:alertu_flutter/services/ringtone_service.dart';      // Missed call ringtone
 import 'package:alertu_flutter/services/bubble_service.dart';
 import 'package:alertu_flutter/subpages/emergency_chats.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class AgoraCallScreen extends StatefulWidget {
   final String channelName;
@@ -36,7 +37,9 @@ class _AgoraCallScreenState extends State<AgoraCallScreen> {
   bool _localUserJoined = false;
   bool _isMuted = false;
   bool _isVideoDisabled = false;
-  bool _isRemoteVideoMuted = true; // Default to true since admin sends audio-only
+  // The admin starts audio-only; this changes when the admin enables video.
+  bool _isRemoteVideoMuted = true;
+
   late RtcEngine _engine;
   bool _isEngineInitialized = false;
   bool _hasLeftCall = false;
@@ -326,11 +329,19 @@ class _AgoraCallScreenState extends State<AgoraCallScreen> {
               _startCallDurationTimer();
             }
           },
+          // React admin can publish video after joining. Update the mobile
+          // renderer when that opt-in camera is enabled or disabled.
+          onUserEnableVideo: (RtcConnection connection, int remoteUid, bool enabled) {
+            if (mounted && remoteUid == _remoteUid) {
+              setState(() => _isRemoteVideoMuted = !enabled);
+            }
+          },
           onUserMuteVideo: (RtcConnection connection, int remoteUid, bool muted) {
             if (mounted && remoteUid == _remoteUid) {
               setState(() => _isRemoteVideoMuted = muted);
             }
           },
+
           onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
             debugPrint('👤 Remote dispatcher offline. Teardown call.');
             if (mounted) {
@@ -503,7 +514,7 @@ class _AgoraCallScreenState extends State<AgoraCallScreen> {
                     CircleAvatar(
                       radius: 42,
                       backgroundColor: Colors.white10,
-                      child: Icon(Icons.headset_mic_rounded, color: Colors.white70, size: 42),
+                      child: Icon(Icons.videocam_off_rounded, color: Colors.white70, size: 42),
                     ),
                     SizedBox(height: 16),
                     Text(
@@ -512,9 +523,10 @@ class _AgoraCallScreenState extends State<AgoraCallScreen> {
                     ),
                     SizedBox(height: 6),
                     Text(
-                      'Audio Only',
+                      'Dispatcher camera is off',
                       style: TextStyle(color: Colors.white54, fontSize: 13),
                     ),
+
                   ],
                 ),
               ),
@@ -663,7 +675,7 @@ class _AgoraCallScreenState extends State<AgoraCallScreen> {
                       border: Border.all(color: Colors.white24, width: 1),
                     ),
                     child: const Icon(
-                      Icons.fullscreen_exit_rounded,
+                      LucideIcons.messageCircle,
                       color: Colors.white,
                       size: 18,
                     ),
