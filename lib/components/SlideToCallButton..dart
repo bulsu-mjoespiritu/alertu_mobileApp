@@ -30,13 +30,12 @@ class _SlideToCallButtonState extends State<SlideToCallButton> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => VideoCallScreen(
-          targetRoom: widget.targetRoom,
+        builder: (context) => AgoraCallScreen(
+          channelName: widget.targetRoom,   // or generate a unique one
           callerName: widget.callerName,
         ),
       ),
     ).then((_) {
-      // Safely reset state flags and slider position when returning from video call
       if (mounted) {
         setState(() {
           _dragPosition = 0.0;

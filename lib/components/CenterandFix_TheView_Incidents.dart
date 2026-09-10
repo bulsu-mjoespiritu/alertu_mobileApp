@@ -13,7 +13,7 @@ class CenterandFixTheViewIncidents {
         1.8,
         1.0
       ],
-      "icon-anchor": "bottom", // Pin drop baseline fix
+      "icon-anchor": "bottom",
       "icon-allow-overlap": true,
       "icon-ignore-placement": true,
     };
@@ -25,29 +25,25 @@ class CenterandFixTheViewIncidents {
     required double longitude,
     double targetZoom = 15.5,
   }) async {
-    final incidentTarget = LatLng(latitude, longitude);
+    const double latBuffer = 0.0035;
+    const double lngBuffer = 0.0035;
 
-    // This dynamically forces MapLibre to calculate the exact geometric center
-    // of the remaining visual workspace, keeping markers, circles, and lines clustered together.
-    await controller.animateCamera(
-      CameraUpdate.newLatLngZoom(incidentTarget, targetZoom),
-      duration: const Duration(milliseconds: 500),
+    final bounds = LatLngBounds(
+      southwest: LatLng(latitude - latBuffer, longitude - lngBuffer),
+      northeast: LatLng(latitude + latBuffer, longitude + lngBuffer),
     );
 
-    // Apply exact visual padding offsets to frame the element cluster safely
-    // Parameters: left, top, right, bottom (in physical screen pixels)
-    await controller.moveCamera(
-      CameraUpdate.padding(
-        left: 0.0,
-        top: 110.0,    // Clears the custom location search bar depth
-        right: 0.0,
-        bottom: 410.0, // Clears the entire top curve of the Report Info Card
+    await controller.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        bounds,
+        left: 32.0,
+        top: 130.0,    // clears search bar
+        right: 32.0,
+        bottom: 430.0, // clears Report Info Card
       ),
+      duration: const Duration(milliseconds: 600),
     );
   }
-
-// ... keep your getSafeUserPositionFallback method below intact
-}
 
   static Future<Position> getSafeUserPositionFallback() async {
     try {
