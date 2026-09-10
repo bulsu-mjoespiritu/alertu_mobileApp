@@ -13,10 +13,18 @@ class CameraPage extends StatefulWidget {
   final double latitude;
   final double longitude;
 
+  /// When true, this screen is being used to replace the media on an
+  /// already-in-progress report draft. Instead of building a brand new
+  /// ReportSubmissionPage (which would discard the draft's incident type,
+  /// notes, voice note, etc.), it pops back with the new file info so the
+  /// caller can update just the media in place.
+  final bool isRetake;
+
   const CameraPage({
     super.key,
     required this.latitude,
     required this.longitude,
+    this.isRetake = false,
   });
 
   @override
@@ -139,18 +147,27 @@ class _CameraPageState extends State<CameraPage> {
     final String customFileName = p.basename(finalPath);
 
     if (context.mounted) {
-      Navigator.pop(context);
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => ReportSubmissionPage(
-            localMediaPath: finalPath,
-            mediaFileName: customFileName,
-            latitude: widget.latitude,
-            longitude: widget.longitude,
+      if (widget.isRetake) {
+        // 🎯 Retake flow: hand the new file back to the waiting
+        // ReportSubmissionPage instead of creating a new one.
+        Navigator.pop(context, {
+          'path': finalPath,
+          'fileName': customFileName,
+        });
+      } else {
+        Navigator.pop(context);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ReportSubmissionPage(
+              localMediaPath: finalPath,
+              mediaFileName: customFileName,
+              latitude: widget.latitude,
+              longitude: widget.longitude,
+            ),
           ),
-        ),
-      );
+        );
+      }
     }
   }
 

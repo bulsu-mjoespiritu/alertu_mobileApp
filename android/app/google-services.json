@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "55999308203-7m2pnhcclqepadp9gh7m8s1a46tf8p07.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ndrrmo.alertu.alertu_flutter",
+            "certificate_hash": "fcc47007cb49449ce287daa14158869aabfbb125"
+          }
+        },
+        {
           "client_id": "55999308203-a14grb4v220oe4go1b565g443aahpu1i.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

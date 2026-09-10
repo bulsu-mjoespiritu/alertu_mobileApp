@@ -17,6 +17,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'confirmation_subpage.dart';
 import 'services/api_service.dart';
 import 'choose_another.dart';
+import 'camera_page.dart';
 import 'package:alertu_flutter/user_provider.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' as libre;
 
@@ -52,6 +53,11 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
   late double _currentLongitude;
   String _currentAddress = "Loading location details...";
 
+  // 📸 Mutable local copies of the captured media, so "Retake" can update
+  // just these without rebuilding the whole page and losing the draft.
+  String? _localMediaPath;
+  String? _mediaFileName;
+
   String _selectedIncident = 'Fire';
   String _selectedSeverity = 'Low';
   String _selectedHazard = 'None';
@@ -78,6 +84,8 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
 
     _currentLatitude = widget.latitude;
     _currentLongitude = widget.longitude;
+    _localMediaPath = widget.localMediaPath;
+    _mediaFileName = widget.mediaFileName;
     _syncNominatimAddress(_currentLatitude, _currentLongitude);
   }
 
@@ -374,7 +382,8 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
     });
   }
 
-  Future<void> _onChangeLocationAndRetake() async {
+  /// Updates ONLY the pin/address. Media is left completely untouched.
+  Future<void> _onEditLocation() async {
     if (_isSubmitting) return; // Lock changing location while submitting
     FocusScope.of(context).unfocus();
     await Navigator.push(
@@ -382,6 +391,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       MaterialPageRoute(
         builder: (context) => ChooseAnotherPage(
           initialLocation: libre.LatLng(_currentLatitude, _currentLongitude),
+          isEditingExistingReport: true, // 🎯 don't force a trip to the camera
           onLocationConfirmed: (selectedCoords) {
             setState(() {
               _currentLatitude = selectedCoords.latitude;
@@ -393,6 +403,30 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
         ),
       ),
     );
+  }
+
+  /// Replaces ONLY the photo/video. Location is left completely untouched.
+  Future<void> _onRetakeMedia() async {
+    if (_isSubmitting) return; // Lock retaking while submitting
+    FocusScope.of(context).unfocus();
+
+    final result = await Navigator.push<Map<String, String>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CameraPage(
+          latitude: _currentLatitude,
+          longitude: _currentLongitude,
+          isRetake: true,
+        ),
+      ),
+    );
+
+    if (result != null && mounted) {
+      setState(() {
+        _localMediaPath = result['path'];
+        _mediaFileName = result['fileName'];
+      });
+    }
   }
 
   Future<void> _saveDirectlyToFirestore(String docId, Map<String, dynamic> payload, bool isDuplicate) async {
@@ -429,11 +463,11 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       String? cloudAudioUrl;
 
       // 1. Upload Photo/Video to Cloud on Submit
-      if (widget.localMediaPath != null && widget.localMediaPath!.isNotEmpty) {
-        final file = File(widget.localMediaPath!);
+      if (_localMediaPath != null && _localMediaPath!.isNotEmpty) {
+        final file = File(_localMediaPath!);
         if (file.existsSync()) {
           setState(() => _submitStatusText = 'Uploading media to cloud...');
-          cloudMediaUrl = await ApiService.uploadMediaToB2(widget.localMediaPath!);
+          cloudMediaUrl = await ApiService.uploadMediaToB2(_localMediaPath!);
         }
       }
 
@@ -482,8 +516,8 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
         "submitterPhone": reporterDetails['phone'] ?? firebaseUser?.phoneNumber ?? 'No contact number',
         "mediaUrl": (cloudMediaUrl != null && cloudMediaUrl.isNotEmpty)
             ? cloudMediaUrl
-            : (widget.localMediaPath ?? ''),
-        "mediaFileName": widget.mediaFileName ?? "captured_media.jpg",
+            : (_localMediaPath ?? ''),
+        "mediaFileName": _mediaFileName ?? "captured_media.jpg",
         "incidentType": resolvedIncidentType,
         "severity": _selectedSeverity,
         "hazard": finalHazardType.isEmpty ? 'None' : finalHazardType,
@@ -749,7 +783,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      if (widget.localMediaPath != null && widget.localMediaPath!.isNotEmpty) ...[
+                      if (_localMediaPath != null && _localMediaPath!.isNotEmpty) ...[
                         _buildCard(
                           bgColor: cardBg,
                           borderColor: cardBorder,
@@ -774,7 +808,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      widget.mediaFileName ?? 'Attached Photo/Video',
+                                      _mediaFileName ?? 'Attached Photo/Video',
                                       style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: textMain),
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -789,24 +823,56 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
                         const SizedBox(height: 12),
                       ],
 
-                      OutlinedButton.icon(
-                        onPressed: _isSubmitting ? null : _onChangeLocationAndRetake, // 🔒 Disabled during submission
-                        style: OutlinedButton.styleFrom(
-                          backgroundColor: cardBg,
-                          foregroundColor: primaryBlue,
-                          side: BorderSide(color: cardBorder),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                        icon: Icon(LucideIcons.refreshCw, size: 15, color: _isSubmitting ? textMuted : primaryBlue),
-                        label: Text(
-                          'Change Location or Retake Photo/Video',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
-                            color: _isSubmitting ? textMuted : primaryBlue,
+                      Row(
+                        children: [
+                          // 📍 Changes ONLY the pin/address. Media is untouched.
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _isSubmitting ? null : _onEditLocation, // 🔒 Disabled during submission
+                              style: OutlinedButton.styleFrom(
+                                backgroundColor: cardBg,
+                                foregroundColor: primaryBlue,
+                                side: BorderSide(color: cardBorder),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              icon: Icon(LucideIcons.mapPin, size: 15, color: _isSubmitting ? textMuted : primaryBlue),
+                              label: Text(
+                                'Change Location',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                  color: _isSubmitting ? textMuted : primaryBlue,
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
+                          if (_localMediaPath != null && _localMediaPath!.isNotEmpty) ...[
+                            const SizedBox(width: 10),
+                            // 📷 Replaces ONLY the photo/video. Location is untouched.
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _isSubmitting ? null : _onRetakeMedia, // 🔒 Disabled during submission
+                                style: OutlinedButton.styleFrom(
+                                  backgroundColor: cardBg,
+                                  foregroundColor: primaryBlue,
+                                  side: BorderSide(color: cardBorder),
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                icon: Icon(LucideIcons.camera, size: 15, color: _isSubmitting ? textMuted : primaryBlue),
+                                label: Text(
+                                  'Retake Photo',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13,
+                                    color: _isSubmitting ? textMuted : primaryBlue,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: 20),
 

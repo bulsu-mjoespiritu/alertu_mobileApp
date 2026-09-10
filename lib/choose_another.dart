@@ -13,10 +13,17 @@ class ChooseAnotherPage extends StatefulWidget {
   final Function(LatLng newLocation)? onLocationConfirmed;
   final LatLng initialLocation;
 
+  /// When true, confirming just returns the pin to the caller (e.g. editing
+  /// the location on an already-drafted report). When false (default), this
+  /// page behaves as the first step of the original capture flow and pushes
+  /// into [CameraPage] after confirming, since no photo/video has been taken yet.
+  final bool isEditingExistingReport;
+
   const ChooseAnotherPage({
     super.key,
     required this.initialLocation,
     this.onLocationConfirmed,
+    this.isEditingExistingReport = false,
   });
 
   @override
@@ -332,7 +339,7 @@ class _ChooseAnotherPageState extends State<ChooseAnotherPage> with SingleTicker
                                   separatorBuilder: (context, index) => Divider(height: 1, thickness: 1, color: Colors.grey.shade50),
                                   itemBuilder: (context, index) {
                                     final Place place = _searchResults[index];
-                                    final String displayName = place.displayName ?? 'Unknown Location';
+                                    final String displayName = place.displayName;
 
                                     return ListTile(
                                       leading: Icon(Icons.location_on_outlined, color: Colors.grey.shade400, size: 20),
@@ -378,15 +385,23 @@ class _ChooseAnotherPageState extends State<ChooseAnotherPage> with SingleTicker
                             widget.onLocationConfirmed!(_currentCenter);
                           }
 
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => CameraPage(
-                                latitude: _currentCenter.latitude,
-                                longitude: _currentCenter.longitude,
+                          if (widget.isEditingExistingReport) {
+                            // 🎯 Editing an existing draft: only the pin changes.
+                            // Don't force the user back into the camera.
+                            Navigator.pop(context);
+                          } else {
+                            // Original "new report" flow: location is step 1,
+                            // capturing the photo/video is step 2.
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => CameraPage(
+                                  latitude: _currentCenter.latitude,
+                                  longitude: _currentCenter.longitude,
+                                ),
                               ),
-                            ),
-                          );
+                            );
+                          }
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: primaryColor,
@@ -396,9 +411,11 @@ class _ChooseAnotherPageState extends State<ChooseAnotherPage> with SingleTicker
                           shadowColor: primaryColor.withOpacity(0.4),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         ),
-                        child: const Text(
-                          'Confirm Selected Location',
-                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 0.3),
+                        child: Text(
+                          widget.isEditingExistingReport
+                              ? 'Update Location'
+                              : 'Confirm Selected Location',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 0.3),
                         ),
                       ),
                     ),
