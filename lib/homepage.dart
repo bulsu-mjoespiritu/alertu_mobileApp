@@ -15,6 +15,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
 
 import 'package:alertu_flutter/services/api_service.dart';
+import 'package:alertu_flutter/services/quick_report_channel.dart';
 import 'package:alertu_flutter/pages/notifspage.dart';
 import 'package:alertu_flutter/pages/reportspage.dart';
 import 'package:alertu_flutter/pages/settingspage.dart';
@@ -357,6 +358,12 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+
+    // 🎯 Hand up the exact same trigger the in-app report button uses, so
+    // the Quick Settings tile can fire it directly instead of a separate,
+    // divergent path.
+    QuickReportBridge.registerTrigger(_handleReportIncident);
+
     _setupSocketDeactivationListener();
     _setupIncidentNotificationSocketListener();
 
@@ -530,6 +537,8 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    QuickReportBridge.unregisterTrigger(_handleReportIncident);
+
     LiveDetailsReports.selectedReportForMapNotifier.removeListener(
       _onSelectedReportForMapChanged,
     );
@@ -687,6 +696,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     _symbolManager = controller.symbolManager;
     _circleManager = controller.circleManager;
     _lineManager = controller.lineManager;
+    QuickReportBridge.markMapReady(); // 🎯 map is now actually usable
   }
 
   Future<void> _onSearchPlaceSelected(
