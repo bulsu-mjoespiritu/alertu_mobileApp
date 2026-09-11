@@ -33,12 +33,15 @@ import 'components/SummaryReport_Button.dart';
 import 'components/UserPinpoint_Button.dart';
 import 'components/IsThisYourLocation.dart';
 import 'package:alertu_flutter/disable_modal.dart';
+import 'package:alertu_flutter/app_navigator.dart';
 
 // --- ANIMATION UI KIT UTILITIES ---
 import 'package:alertu_flutter/services/reportnotifs.dart';
 import 'package:alertu_flutter/services/nearbyreports_notifs.dart';
 import 'package:alertu_flutter/services/insidethereports_notifs.dart';
 import 'package:alertu_flutter/services/userexitedreport_notifs.dart';
+import 'package:alertu_flutter/camera_page.dart';
+import 'package:alertu_flutter/services/quick_report_channel.dart';
 import 'components/showreportifinsideuser.dart';
 import 'components/slideup_animation.dart';
 import 'components/slidedown_animation.dart';
@@ -362,7 +365,9 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     // 🎯 Hand up the exact same trigger the in-app report button uses, so
     // the Quick Settings tile can fire it directly instead of a separate,
     // divergent path.
-    QuickReportBridge.registerTrigger(_handleReportIncident);
+    // In-app + button still use location flow via onReportPressed.
+    // Tile uses camera/create-report without forcing GPS first.
+    QuickReportBridge.registerCameraTrigger(_openReportFromTile);
 
     _setupSocketDeactivationListener();
     _setupIncidentNotificationSocketListener();
@@ -373,6 +378,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _consumeSelectedReportForMap();
+      QuickReportChannel.checkColdLaunch(navigatorKey);
     });
 
     _pages = [
@@ -537,7 +543,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
-    QuickReportBridge.unregisterTrigger(_handleReportIncident);
+    QuickReportBridge.unregisterCameraTrigger(_openReportFromTile);
 
     LiveDetailsReports.selectedReportForMapNotifier.removeListener(
       _onSelectedReportForMapChanged,
@@ -696,7 +702,6 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     _symbolManager = controller.symbolManager;
     _circleManager = controller.circleManager;
     _lineManager = controller.lineManager;
-    QuickReportBridge.markMapReady(); // 🎯 map is now actually usable
   }
 
   Future<void> _onSearchPlaceSelected(
@@ -1808,6 +1813,29 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     } finally {
       if (mounted) setState(() => _isLoadingLocation = false);
     }
+  }
+
+  /// Quick Settings tile: no location permission / GPS wait.
+  /// Opens create-report flow; user picks location on that screen later.
+  /// Quick Settings tile: skip GPS + "Is this your location?" → open camera.
+  Future<void> _openReportFromTile() async {
+    if (!mounted) return;
+
+    if (_currentIndex != kNavPageHome) {
+      setState(() => _currentIndex = kNavPageHome);
+    }
+
+    final double lat = _currentPosition?.latitude ?? 14.7925;
+    final double lon = _currentPosition?.longitude ?? 120.8970;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => CameraPage(
+          latitude: lat,
+          longitude: lon,
+        ),
+      ),
+    );
   }
 
   void _onItemTapped(int index) {

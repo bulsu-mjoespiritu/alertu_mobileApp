@@ -5,6 +5,7 @@ import 'package:alertu_flutter/services/socket.dart';
 import 'package:alertu_flutter/services/notification_service.dart';
 import 'package:alertu_flutter/services/reportnotifs.dart';
 import 'package:alertu_flutter/services/quick_report_channel.dart';
+import 'package:alertu_flutter/app_navigator.dart'; // ← shared navigatorKey
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -15,10 +16,6 @@ import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:flex_color_scheme/flex_color_scheme.dart';
 
-/// 🎯 Global navigator key so native-triggered navigation (e.g. the Quick
-/// Settings tile) can push routes without needing a BuildContext.
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-
 /// 🛡️ Custom HttpOverrides class to handle SSL Certificate verification
 /// for Railway endpoints and Backblaze B2 storage on devices/emulators missing root CAs.
 class AppHttpOverrides extends HttpOverrides {
@@ -26,7 +23,6 @@ class AppHttpOverrides extends HttpOverrides {
   HttpClient createHttpClient(SecurityContext? context) {
     return super.createHttpClient(context)
       ..badCertificateCallback = (X509Certificate cert, String host, int port) {
-        // Automatically trust SSL handshakes from Railway, Backblaze, Render, or internal domains
         if (host.contains('up.railway.app') ||
             host.contains('onrender.com') ||
             host.contains('backblazeb2.com') ||
@@ -39,23 +35,18 @@ class AppHttpOverrides extends HttpOverrides {
 }
 
 void main() async {
-  // 🔒 1. Apply global HTTP Overrides FIRST before any initialization
   HttpOverrides.global = AppHttpOverrides();
 
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
-  // 🎯 Listen for the Quick Settings tile while the app may already be
-  // running (native onNewIntent path). Must be set up before runApp().
+  // Warm launches (app already running): tile → onNewIntent → openQuickReport
   QuickReportChannel.listenForWarmLaunch(navigatorKey);
 
-  // 2. Fetch saved theme mode before app loads
   final savedThemeMode = await AdaptiveTheme.getThemeMode();
 
-  // 3. Initialize Firebase Core
   await Firebase.initializeApp();
 
-  // 4. Initialize Notification Service & Google Auth
   try {
     await ReportNotifService.instance.initializeAndStart();
     await GoogleSignIn.instance.initialize();
@@ -63,18 +54,15 @@ void main() async {
     debugPrint("Auth/Notification services initialization warning: $e");
   }
 
-  // 5. Run App immediately so UI renders without waiting for network timeouts
   runApp(
     ProviderScope(
       child: MyApp(savedThemeMode: savedThemeMode),
     ),
   );
 
-  // 6. Asynchronous Background Network Initialization
   _initServicesInBackground();
 }
 
-/// Runs socket and backend initialization in the background without freezing app startup
 Future<void> _initServicesInBackground() async {
   try {
     await ApiService.initBackend();
@@ -100,7 +88,6 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AdaptiveTheme(
-      // --- Light Theme Setup ---
       light: FlexThemeData.light(
         scheme: FlexScheme.blue,
         useMaterial3: true,
@@ -115,8 +102,6 @@ class MyApp extends StatelessWidget {
           defaultRadius: 12.0,
         ),
       ),
-
-      // --- Dark Theme Setup ---
       dark: FlexThemeData.dark(
         scheme: FlexScheme.blue,
         useMaterial3: true,
@@ -130,21 +115,21 @@ class MyApp extends StatelessWidget {
           defaultRadius: 12.0,
         ),
       ),
-
       initial: savedThemeMode ?? AdaptiveThemeMode.light,
-
-      // --- Builder integrating adaptive Material themes with ForUI ---
       builder: (theme, darkTheme) => MaterialApp(
         title: 'Alert U',
-        navigatorKey: navigatorKey, // 🎯 enables tile-triggered navigation
+        navigatorKey: navigatorKey, // from app_navigator.dart
         theme: theme,
         darkTheme: darkTheme,
         builder: (context, child) {
           final isDark = AdaptiveTheme.of(context).mode.isDark;
           return FTheme(
-            data: isDark ? FTheme.neutral.dark.touch : FTheme.neutral.light.touch,
+            data: isDark
+                ? FTheme.neutral.dark.touch
+                : FTheme.neutral.light.touch,
             child: MediaQuery(
-              data: MediaQuery.of(context).copyWith(viewInsets: EdgeInsets.zero),
+              data: MediaQuery.of(context)
+                  .copyWith(viewInsets: EdgeInsets.zero),
               child: child!,
             ),
           );
@@ -200,17 +185,15 @@ class _AnimatedSplashScreenState extends State<AnimatedSplashScreen>
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 500),
-        pageBuilder: (context, animation, secondaryAnimation) => const Wrapper(),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+        const Wrapper(),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
         },
       ),
     );
 
-    // 🎯 Once the normal Wrapper/home flow has settled, check whether this
-    // launch actually came from the Quick Settings tile. If so, push the
-    // report screen on top — same feel as LocalSend landing directly on
-    // its "Receive" screen after a cold start.
+    // Cold start from tile: wait until Wrapper/home can mount, then trigger.
     await Future.delayed(const Duration(milliseconds: 550));
     if (!mounted) return;
     await QuickReportChannel.checkColdLaunch(navigatorKey);

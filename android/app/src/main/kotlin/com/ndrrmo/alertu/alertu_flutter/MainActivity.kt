@@ -11,26 +11,46 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        methodChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CHANNEL
+        )
 
-        // Dart asks this on startup: "was I just cold-launched from the tile?"
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "checkLaunchAction" -> {
-                    val launchedFromTile = intent?.action == QuickReportTileService.ACTION_QUICK_REPORT
-                    if (launchedFromTile) intent.action = Intent.ACTION_MAIN // consume so it won't re-fire
-                    result.success(launchedFromTile)
+                    val fromIntent =
+                        intent?.action == QuickReportTileService.ACTION_QUICK_REPORT
+                    val prefs = getSharedPreferences(
+                        QuickReportTileService.PREFS,
+                        MODE_PRIVATE
+                    )
+                    val fromPrefs =
+                        prefs.getBoolean(QuickReportTileService.KEY_PENDING, false)
+
+                    if (fromIntent || fromPrefs) {
+                        intent.action = Intent.ACTION_MAIN
+                        prefs.edit()
+                            .putBoolean(QuickReportTileService.KEY_PENDING, false)
+                            .apply()
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
                 }
                 else -> result.notImplemented()
             }
         }
     }
 
-    // Fires when the app was ALREADY running and the tile is tapped again
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.action == QuickReportTileService.ACTION_QUICK_REPORT) {
+            getSharedPreferences(QuickReportTileService.PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean(QuickReportTileService.KEY_PENDING, false)
+                .apply()
             methodChannel?.invokeMethod("openQuickReport", null)
         }
     }
