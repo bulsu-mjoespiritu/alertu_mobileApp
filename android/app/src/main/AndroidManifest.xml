@@ -17,6 +17,9 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 🎯 Required to expose a custom Quick Settings tile -->
+    <uses-permission android:name="android.permission.BIND_QUICK_SETTINGS_TILE"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:label="AlertU"
@@ -54,6 +57,19 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- ==================== QUICK SETTINGS TILE ==================== -->
+        <service
+            android:name=".QuickReportTileService"
+            android:icon="@drawable/ic_report_tile"
+            android:label="@string/quick_report_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- ============================================================ -->
 
         <meta-data
             android:name="flutterEmbedding"

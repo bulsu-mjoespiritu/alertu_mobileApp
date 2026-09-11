@@ -1,11 +1,10 @@
-import 'dart:async';
 import 'dart:io';
-
 import 'package:alertu_flutter/wrapper.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:alertu_flutter/services/socket.dart';
 import 'package:alertu_flutter/services/notification_service.dart';
 import 'package:alertu_flutter/services/reportnotifs.dart';
+import 'package:alertu_flutter/services/quick_report_channel.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -15,7 +14,10 @@ import 'package:forui/forui.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:flex_color_scheme/flex_color_scheme.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+
+/// 🎯 Global navigator key so native-triggered navigation (e.g. the Quick
+/// Settings tile) can push routes without needing a BuildContext.
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 /// 🛡️ Custom HttpOverrides class to handle SSL Certificate verification
 /// for Railway endpoints and Backblaze B2 storage on devices/emulators missing root CAs.
@@ -42,6 +44,10 @@ void main() async {
 
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+
+  // 🎯 Listen for the Quick Settings tile while the app may already be
+  // running (native onNewIntent path). Must be set up before runApp().
+  QuickReportChannel.listenForWarmLaunch(navigatorKey);
 
   // 2. Fetch saved theme mode before app loads
   final savedThemeMode = await AdaptiveTheme.getThemeMode();
@@ -86,55 +92,10 @@ Future<void> _initServicesInBackground() async {
   }
 }
 
-class MyApp extends StatefulWidget {
+class MyApp extends StatelessWidget {
   final AdaptiveThemeMode? savedThemeMode;
 
   const MyApp({super.key, this.savedThemeMode});
-
-  @override
-  State<MyApp> createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _setWakelockEnabled(true);
-  }
-
-  Future<void> _setWakelockEnabled(bool enabled) async {
-    try {
-      if (enabled) {
-        await WakelockPlus.enable();
-      } else {
-        await WakelockPlus.disable();
-      }
-      debugPrint('🔒 Wakelock ${enabled ? 'enabled' : 'disabled'}');
-    } catch (error) {
-      // Wakelock must never prevent the app, GPS, or sockets from working.
-      debugPrint('⚠️ Wakelock update skipped: $error');
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-
-    if (state == AppLifecycleState.resumed) {
-      _setWakelockEnabled(true);
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      _setWakelockEnabled(false);
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    unawaited(_setWakelockEnabled(false));
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -170,20 +131,22 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ),
       ),
 
-      initial: widget.savedThemeMode ?? AdaptiveThemeMode.light,
+      initial: savedThemeMode ?? AdaptiveThemeMode.light,
 
       // --- Builder integrating adaptive Material themes with ForUI ---
       builder: (theme, darkTheme) => MaterialApp(
         title: 'Alert U',
+        navigatorKey: navigatorKey, // 🎯 enables tile-triggered navigation
         theme: theme,
         darkTheme: darkTheme,
         builder: (context, child) {
           final isDark = AdaptiveTheme.of(context).mode.isDark;
           return FTheme(
             data: isDark ? FTheme.neutral.dark.touch : FTheme.neutral.light.touch,
-            // Preserve Flutter's real MediaQuery.viewInsets so form screens
-            // can resize and scroll focused fields above the keyboard.
-            child: child!,
+            child: MediaQuery(
+              data: MediaQuery.of(context).copyWith(viewInsets: EdgeInsets.zero),
+              child: child!,
+            ),
           );
         },
         debugShowCheckedModeBanner: false,
@@ -243,6 +206,14 @@ class _AnimatedSplashScreenState extends State<AnimatedSplashScreen>
         },
       ),
     );
+
+    // 🎯 Once the normal Wrapper/home flow has settled, check whether this
+    // launch actually came from the Quick Settings tile. If so, push the
+    // report screen on top — same feel as LocalSend landing directly on
+    // its "Receive" screen after a cold start.
+    await Future.delayed(const Duration(milliseconds: 550));
+    if (!mounted) return;
+    await QuickReportChannel.checkColdLaunch(navigatorKey);
   }
 
   @override
