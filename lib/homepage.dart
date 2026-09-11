@@ -1815,9 +1815,8 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     }
   }
 
-  /// Quick Settings tile: no location permission / GPS wait.
-  /// Opens create-report flow; user picks location on that screen later.
-  /// Quick Settings tile: skip GPS + "Is this your location?" → open camera.
+  /// Quick Settings tile: skip GPS + location sheet → camera only.
+  /// Location stays empty on Submit screen until user taps "Add Location".
   Future<void> _openReportFromTile() async {
     if (!mounted) return;
 
@@ -1825,14 +1824,10 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
       setState(() => _currentIndex = kNavPageHome);
     }
 
-    final double lat = _currentPosition?.latitude ?? 14.7925;
-    final double lon = _currentPosition?.longitude ?? 120.8970;
-
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => CameraPage(
-          latitude: lat,
-          longitude: lon,
+        builder: (context) => const CameraPage(
+          // latitude / longitude omitted (null) → manual "Add location"
         ),
       ),
     );

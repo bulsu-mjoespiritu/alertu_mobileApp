@@ -10,20 +10,14 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'report_submission.dart';
 
 class CameraPage extends StatefulWidget {
-  final double latitude;
-  final double longitude;
-
-  /// When true, this screen is being used to replace the media on an
-  /// already-in-progress report draft. Instead of building a brand new
-  /// ReportSubmissionPage (which would discard the draft's incident type,
-  /// notes, voice note, etc.), it pops back with the new file info so the
-  /// caller can update just the media in place.
+  final double? latitude;   // nullable
+  final double? longitude;
   final bool isRetake;
 
   const CameraPage({
     super.key,
-    required this.latitude,
-    required this.longitude,
+    this.latitude,
+    this.longitude,
     this.isRetake = false,
   });
 
@@ -162,7 +156,7 @@ class _CameraPageState extends State<CameraPage> {
             builder: (context) => ReportSubmissionPage(
               localMediaPath: finalPath,
               mediaFileName: customFileName,
-              latitude: widget.latitude,
+              latitude: widget.latitude,   // may be null
               longitude: widget.longitude,
             ),
           ),
