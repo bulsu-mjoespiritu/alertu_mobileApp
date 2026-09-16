@@ -91,6 +91,21 @@ class NotificationStore {
     notifications.value = updated;
   }
 
+  /// Adds [item] if its id hasn't been seen before; otherwise refreshes the
+  /// existing entry with [item]'s content and moves it back to the top.
+  /// Use this (instead of [add]) for sources that legitimately re-fire for
+  /// the same id with updated content -- e.g. a proximity alert whose
+  /// distance changes as the user keeps moving, still tied to the same
+  /// report id. Repeated calls with identical content are a no-op beyond
+  /// the reorder, so this also satisfies "notifications do not duplicate
+  /// on repeated shows of the same id".
+  void addOrUpdate(NotificationItem item) {
+    final withoutExisting =
+        notifications.value.where((existing) => existing.id != item.id).toList();
+    _knownIds.add(item.id);
+    notifications.value = <NotificationItem>[item, ...withoutExisting];
+  }
+
   void remove(String id) {
     _knownIds.remove(id);
     notifications.value =

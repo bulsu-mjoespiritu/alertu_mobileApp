@@ -103,22 +103,18 @@ class NotificationService {
       final notification = message.notification;
       final android = message.notification?.android;
 
-      final String title = notification?.title?.trim().isNotEmpty == true
-          ? notification!.title!.trim()
-          : 'AlertU';
       final String body = notification?.body?.trim().isNotEmpty == true
           ? notification!.body!.trim()
           : 'You have a new AlertU update.';
 
-      // Bug 3 fix: previously this handler only ever called
-      // showLocalNotification (the system tray banner). Nothing extracted
-      // the message and saved it anywhere, so the Notifications page never
-      // reflected a received push. Every received FCM message is now also
-      // saved to the shared NotificationStore, which NotificationsPage
-      // renders directly.
-      _saveToNotificationStore(message: message, title: title, body: body);
-
       if (notification != null && android != null && !kIsWeb) {
+        // showLocalNotification is what actually saves this to the shared
+        // NotificationStore now (see below) -- it's the single funnel
+        // every notification source in the app uses, so saving is done
+        // there once rather than duplicated here. A data-only FCM message
+        // (no `notification` block) never reaches this branch and is
+        // intentionally not added to the visible Notifications page,
+        // matching that it was never shown to the user as a banner either.
         showLocalNotification(
           id: message.hashCode,
           title: 'AlertU',
@@ -197,6 +193,24 @@ class NotificationService {
       debugPrint('🔕 Local notification suppressed because notifications are disabled.');
       return;
     }
+
+    // Bug 3/4 fix (revised): this is the single funnel every notification
+    // source in the app already calls before showing a system-tray banner
+    // -- FCM foreground messages, nearby-incident proximity alerts,
+    // inside/exited hazard-zone alerts, and approved-report alerts (see
+    // nearbyreports_notifs.dart, insidethereports_notifs.dart,
+    // userexitedreport_notifs.dart, reportnotifs.dart). Saving here, once,
+    // instead of only in the FCM handler, means every one of those real
+    // alerts -- including the "AlertU Nearby Incident" case -- now reaches
+    // the Notifications page, not just FCM pushes.
+    notificationStore.addOrUpdate(
+      NotificationItem(
+        id: 'local_$id',
+        title: title,
+        description: body,
+        timestamp: DateTime.now(),
+      ),
+    );
 
     final androidDetails = AndroidNotificationDetails(
       _emergencyChannel.id,
