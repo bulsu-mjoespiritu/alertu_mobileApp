@@ -806,37 +806,55 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final unselectedTextColor = isDark ? Colors.grey.shade400 : const Color(0xFF94A3B8);
 
     return Expanded(
-      child: GestureDetector(
-        onTap: () {
-          setState(() {
-            _selectedTabIndex = index;
-          });
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeInOut,
-          decoration: BoxDecoration(
-            color: isSelected ? selectedBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-            boxShadow: isSelected
-                ? [
-              BoxShadow(
-                color: Colors.black.withOpacity(isDark ? 0.3 : 0.05),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              )
-            ]
-                : [],
-          ),
-          alignment: Alignment.center,
-          child: AnimatedDefaultTextStyle(
+      // Bug 5 fix: a unique key per tab keeps these two as distinct,
+      // independent elements rather than relying purely on list position.
+      key: ValueKey('report_tab_$index'),
+      // A Material scoped to just this tab confines its InkWell's press
+      // feedback (ripple/highlight) to this widget's own bounds. Before,
+      // a bare GestureDetector had no press feedback of its own, so the
+      // shared-state AnimatedContainer color swap on BOTH tabs (one
+      // becoming selected, the other becoming unselected) was the only
+      // visible reaction to a tap -- which reads as "both buttons
+      // animated" even though only one was actually tapped.
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          splashColor: (isDark ? Colors.white : Colors.black).withOpacity(0.08),
+          highlightColor: (isDark ? Colors.white : Colors.black).withOpacity(0.04),
+          onTap: () {
+            if (_selectedTabIndex == index) return;
+            setState(() {
+              _selectedTabIndex = index;
+            });
+          },
+          child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
-            style: _textStyle(
-              fontSize: 13,
-              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
-              color: isSelected ? selectedTextColor : unselectedTextColor,
+            curve: Curves.easeInOut,
+            decoration: BoxDecoration(
+              color: isSelected ? selectedBg : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: isSelected
+                  ? [
+                BoxShadow(
+                  color: Colors.black.withOpacity(isDark ? 0.3 : 0.05),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                )
+              ]
+                  : [],
             ),
-            child: Text(title),
+            alignment: Alignment.center,
+            child: AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 200),
+              style: _textStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
+                color: isSelected ? selectedTextColor : unselectedTextColor,
+              ),
+              child: Text(title),
+            ),
           ),
         ),
       ),

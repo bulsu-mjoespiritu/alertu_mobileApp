@@ -6,6 +6,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'notification_store.dart';
+
 /// Top-level entry point function for background messaging.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -101,17 +103,53 @@ class NotificationService {
       final notification = message.notification;
       final android = message.notification?.android;
 
+      final String title = notification?.title?.trim().isNotEmpty == true
+          ? notification!.title!.trim()
+          : 'AlertU';
+      final String body = notification?.body?.trim().isNotEmpty == true
+          ? notification!.body!.trim()
+          : 'You have a new AlertU update.';
+
+      // Bug 3 fix: previously this handler only ever called
+      // showLocalNotification (the system tray banner). Nothing extracted
+      // the message and saved it anywhere, so the Notifications page never
+      // reflected a received push. Every received FCM message is now also
+      // saved to the shared NotificationStore, which NotificationsPage
+      // renders directly.
+      _saveToNotificationStore(message: message, title: title, body: body);
+
       if (notification != null && android != null && !kIsWeb) {
         showLocalNotification(
           id: message.hashCode,
           title: 'AlertU',
-          body: notification.body?.trim().isNotEmpty == true
-              ? notification.body!.trim()
-              : 'You have a new AlertU update.',
+          body: body,
           payload: message.data.toString(),
         );
       }
     });
+  }
+
+  /// Extracts the relevant data from an incoming FCM [message] and stores
+  /// it in the shared [NotificationStore] so NotificationsPage can display
+  /// it. Deduplicated by `message.messageId` inside the store, so this is
+  /// safe to call from multiple entry points (foreground message, tapped
+  /// notification, cold-start initial message) for the same push.
+  void _saveToNotificationStore({
+    required RemoteMessage message,
+    required String title,
+    required String body,
+  }) {
+    final String id = message.messageId ??
+        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}';
+
+    notificationStore.add(
+      NotificationItem(
+        id: id,
+        title: title,
+        description: body,
+        timestamp: DateTime.now(),
+      ),
+    );
   }
 
   Future<bool> areNotificationsEnabled() async {
@@ -194,13 +232,32 @@ class NotificationService {
   Future<void> _setupNotificationTapHandlers() async {
     final initialMessage = await _messaging.getInitialMessage();
     if (initialMessage != null) {
+      _saveTappedMessageToStore(initialMessage);
       _handleNotificationTapPayload(initialMessage.data.toString());
     }
 
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       debugPrint('📲 User tapped notification from background!');
+      _saveTappedMessageToStore(message);
       _handleNotificationTapPayload(message.data.toString());
     });
+  }
+
+  /// Covers the case where the message arrived while the app was
+  /// backgrounded/terminated (so `_setupForegroundHandler` never ran for
+  /// it) and the user opened it by tapping the system notification. The
+  /// store's own id-based deduplication means this is a no-op if the same
+  /// message was already saved by the foreground handler.
+  void _saveTappedMessageToStore(RemoteMessage message) {
+    final notification = message.notification;
+    final String title = notification?.title?.trim().isNotEmpty == true
+        ? notification!.title!.trim()
+        : 'AlertU';
+    final String body = notification?.body?.trim().isNotEmpty == true
+        ? notification!.body!.trim()
+        : 'You have a new AlertU update.';
+
+    _saveToNotificationStore(message: message, title: title, body: body);
   }
 
   void _handleNotificationTapPayload(String? payload) {

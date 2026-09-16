@@ -188,9 +188,6 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
   StreamSubscription<Position>? _positionSubscription;
   Timer? _locationAnimationTimer;
-  Timer? _cameraFollowScheduleTimer;
-  LatLng? _pendingCameraFollowLocation;
-  bool _cameraFollowInProgress = false;
   LatLng? _displayedUserLocation;
   LatLng? _targetUserLocation;
   double _displayedAccuracy = 30.0;
@@ -559,8 +556,6 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     unawaited(insideReportsNotifService.stopListening());
     unawaited(userExitedReportNotifsService.stopListening());
     _locationAnimationTimer?.cancel();
-    _cameraFollowScheduleTimer?.cancel();
-    _pendingCameraFollowLocation = null;
     _locationAnimationToken++;
     _notificationsTabVisibility.dispose();
     super.dispose();
@@ -1216,57 +1211,13 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
   void _queueUserLocationRender(LatLng location, double accuracy) {
     _pendingUserLocation = location;
     _pendingUserAccuracy = accuracy;
-    _scheduleCameraFollow(location);
+    // NOTE: this no longer moves the camera. The GPS stream is only used to
+    // keep the blue user-location dot and the notifier services (nearby /
+    // inside / exited-report) up to date. Camera movement only happens as a
+    // direct result of the user tapping the Locate button, which calls
+    // _initializeUserLocation() below. See Bug 1 fix notes.
     if (_locationRenderInProgress) return;
     unawaited(_flushUserLocationRenderQueue());
-  }
-
-  // Keeps the map center synchronized with the same interpolated location used
-  // to render the blue user pinpoint. Throttling prevents camera-command buildup
-  // when the GPS stream produces frequent fixes or the user is moving quickly.
-  void _scheduleCameraFollow(LatLng location) {
-    _pendingCameraFollowLocation = location;
-    if (_cameraFollowScheduleTimer?.isActive ?? false) return;
-
-    _cameraFollowScheduleTimer = Timer(
-      const Duration(milliseconds: 70),
-          () {
-        _cameraFollowScheduleTimer = null;
-        unawaited(_flushCameraFollow());
-      },
-    );
-  }
-
-  Future<void> _flushCameraFollow() async {
-    if (_cameraFollowInProgress) return;
-    _cameraFollowInProgress = true;
-
-    try {
-      while (mounted && _pendingCameraFollowLocation != null) {
-        final controller = mapController;
-        if (controller == null || !_styleLoaded || _isAccountDisabledChecked) {
-          _pendingCameraFollowLocation = null;
-          break;
-        }
-
-        final location = _pendingCameraFollowLocation!;
-        _pendingCameraFollowLocation = null;
-
-        try {
-          await controller.animateCamera(
-            CameraUpdate.newLatLng(location),
-            duration: const Duration(milliseconds: 140),
-          );
-        } catch (error) {
-          debugPrint('Camera follow update skipped: $error');
-        }
-      }
-    } finally {
-      _cameraFollowInProgress = false;
-      if (mounted && _pendingCameraFollowLocation != null) {
-        unawaited(_flushCameraFollow());
-      }
-    }
   }
 
   Future<void> _flushUserLocationRenderQueue() async {
@@ -1789,6 +1740,21 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
   Future<void> _handleReportIncident() async {
     if (_isLoadingLocation) return;
+
+    // Report is reachable from every tab now (Bug 2 fix). The map + camera
+    // animation this flow relies on lives on the Home tab, so bring Home to
+    // the foreground first if the user tapped Report from Reports/Alerts/
+    // Settings. The MapLibreMap widget itself stays mounted at all times
+    // (see the Offstage in build()), so mapController below is still valid.
+    if (_currentIndex != kNavPageHome) {
+      setState(() => _currentIndex = kNavPageHome);
+      // Let the Home tab's Offstage/IndexedStack swap finish before we drive
+      // the camera, otherwise the animateCamera call below can race the
+      // frame in which the map becomes visible again.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      if (!mounted) return;
+    }
+
     setState(() => _isLoadingLocation = true);
 
     try {

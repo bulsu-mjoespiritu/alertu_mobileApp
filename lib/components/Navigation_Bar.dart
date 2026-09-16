@@ -23,10 +23,9 @@ class CustomNavigationBar extends StatelessWidget {
     final Color primaryColor = theme.colorScheme.primary;
     final Color navBgColor = theme.cardColor; // Dynamic background (white in light mode, dark in dark mode)
     final Color unselectedColor = isDark ? Colors.grey.shade400 : Colors.grey.shade600;
-    final bool isReportEnabled = currentIndex == kNavPageHome;
-    final Color reportColor = isReportEnabled
-        ? primaryColor
-        : (isDark ? Colors.grey.shade600 : Colors.grey.shade400);
+    // Report is a global action available from every tab, not just Home, so
+    // it is never visually or functionally disabled based on currentIndex.
+    final Color reportColor = primaryColor;
 
     final double bottomPadding = MediaQuery.of(context).padding.bottom;
 
@@ -61,10 +60,10 @@ class CustomNavigationBar extends StatelessWidget {
             top: -32, // Offsets the FAB button cleanly above the header line of the bar
             left: (MediaQuery.of(context).size.width / 2) - 36,
             child: GestureDetector(
-              onTap: isReportEnabled ? onReportPressed : null,
+              onTap: onReportPressed,
               behavior: HitTestBehavior.opaque,
               child: Opacity(
-                opacity: isReportEnabled ? 1.0 : 0.55,
+                opacity: 1.0,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -73,15 +72,13 @@ class CustomNavigationBar extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: reportColor,
                         shape: BoxShape.circle,
-                        boxShadow: isReportEnabled
-                            ? [
+                        boxShadow: [
                           BoxShadow(
                             color: isDark ? Colors.black54 : Colors.black26,
                             blurRadius: 12,
                             offset: const Offset(0, 6),
                           )
-                        ]
-                            : const [],
+                        ],
                       ),
                       child: Image.asset('images/navbaricons/PlusIcon.png', width: 32, height: 32),
                     ),

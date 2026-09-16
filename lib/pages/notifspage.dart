@@ -8,50 +8,11 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import '../services/socket.dart';
+import '../services/notification_store.dart';
 
-class NotificationItem {
-  final String id;
-  final String title;
-  final String description;
-  final DateTime timestamp;
-  final bool isProcessing;
-  final bool isSuccess;
-  final bool isAlert;
-  final bool isRead;
-
-  NotificationItem({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.timestamp,
-    this.isProcessing = false,
-    this.isSuccess = false,
-    this.isAlert = false,
-    this.isRead = false,
-  });
-
-  NotificationItem copyWith({
-    String? id,
-    String? title,
-    String? description,
-    DateTime? timestamp,
-    bool? isProcessing,
-    bool? isSuccess,
-    bool? isAlert,
-    bool? isRead,
-  }) {
-    return NotificationItem(
-      id: id ?? this.id,
-      title: title ?? this.title,
-      description: description ?? this.description,
-      timestamp: timestamp ?? this.timestamp,
-      isProcessing: isProcessing ?? this.isProcessing,
-      isSuccess: isSuccess ?? this.isSuccess,
-      isAlert: isAlert ?? this.isAlert,
-      isRead: isRead ?? this.isRead,
-    );
-  }
-}
+// NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
+// that NotificationService (FCM) and this page share one model and one
+// source of real data instead of each keeping a disconnected copy.
 
 class NotificationsPage extends StatefulWidget {
   final ValueNotifier<bool>? visibility;
@@ -91,7 +52,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
   void initState() {
     super.initState();
     _initTimezone();
+
+    // Bug 3/4 fix: pick up real notifications from the shared store (FCM
+    // pushes today) instead of ever seeding fake data. _loadInitialNotifications
+    // performs the first sync; the listener keeps the page updated as new
+    // pushes arrive while it stays mounted.
+    notificationStore.notifications.addListener(_syncFromStore);
     _loadInitialNotifications();
+
     widget.visibility?.addListener(_handleVisibilityChanged);
 
     if (widget.visibility?.value == true) {
@@ -180,25 +148,36 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
   }
 
+  // Bug 4 fix: this used to unconditionally replace _notifications with a
+  // single hardcoded "Profile Ready" NotificationItem, both on first load
+  // and on every pull-to-refresh (which also had the side effect of
+  // wiping out any real socket-driven notifications already in the list).
+  // There is no "initial notifications" data source in this app beyond
+  // what the socket listeners and the shared NotificationStore produce, so
+  // this now just re-syncs from the store and otherwise leaves the list
+  // alone.
   void _loadInitialNotifications() {
-    final user = FirebaseAuth.instance.currentUser;
+    _syncFromStore();
+  }
 
-    final DateTime createdAt = user?.metadata.creationTime ??
-        DateTime.now().subtract(const Duration(days: 1));
+  /// Merges any NotificationStore entries (real FCM notifications) that
+  /// aren't already reflected in [_notifications] into the page's list.
+  /// Additive only: never removes or reorders existing socket-driven
+  /// entries, so the review/approved/rejected dedup & expiry logic above
+  /// is unaffected.
+  void _syncFromStore() {
+    if (!mounted) return;
+
+    final storeItems = notificationStore.notifications.value;
+    if (storeItems.isEmpty) return;
+
+    final existingIds = _notifications.map((item) => item.id).toSet();
+    final newItems =
+        storeItems.where((item) => !existingIds.contains(item.id)).toList();
+    if (newItems.isEmpty) return;
 
     setState(() {
-      _notifications = [
-        NotificationItem(
-          id: '0',
-          title: 'Profile Ready',
-          description:
-          'Your emergency reporting profile is active and ready.',
-          timestamp: createdAt,
-          isProcessing: false,
-          isSuccess: false,
-          isAlert: false,
-        ),
-      ];
+      _notifications.insertAll(0, newItems);
     });
   }
 
@@ -563,6 +542,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
   @override
   void dispose() {
     widget.visibility?.removeListener(_handleVisibilityChanged);
+    notificationStore.notifications.removeListener(_syncFromStore);
     for (final timer in _expiryTimers.values) {
       timer.cancel();
     }
@@ -624,6 +604,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
     setState(() {
       _notifications.removeWhere((element) => element.id == item.id);
     });
+    // Keep the shared store in sync so a swiped-away FCM notification
+    // doesn't get re-merged back in by _syncFromStore on the next store
+    // change. No-op if this item never came from the store.
+    notificationStore.remove(item.id);
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
