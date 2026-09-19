@@ -625,6 +625,73 @@ class _NotificationsPageState extends State<NotificationsPage> {
     );
   }
 
+  /// Shows a confirmation dialog before wiping every notification -- this
+  /// is destructive and unrecoverable (there's no persistence layer behind
+  /// it), so a stray tap shouldn't silently empty the list.
+  void _confirmClearAll() {
+    if (_notifications.isEmpty) return;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Clear All Notifications"),
+        content: const Text(
+          "This will remove all notifications from this list. This can't be undone.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE53935),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _clearAllNotifications();
+            },
+            child: const Text("Clear All", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _clearAllNotifications() {
+    // Cancel every pending read-expiry timer so none of them fire a
+    // setState after the items they reference are already gone.
+    for (final timer in _expiryTimers.values) {
+      timer.cancel();
+    }
+    _expiryTimers.clear();
+    _expiringNotificationIds.clear();
+
+    setState(() {
+      _notifications.clear();
+    });
+    // Clears the shared store too, so real (FCM/local) notifications don't
+    // silently repopulate the list on the next _syncFromStore call.
+    notificationStore.clear();
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          "All notifications cleared",
+          style: GoogleFonts.montserrat(fontSize: 12),
+        ),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final grouped = _groupNotifications();
@@ -650,19 +717,39 @@ class _NotificationsPageState extends State<NotificationsPage> {
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
-              // 1. TOP-LEFT HEADER
+              // 1. TOP-LEFT HEADER + CLEAR ALL
               Padding(
                 padding: const EdgeInsets.only(top: 16, bottom: 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    "Notifications",
-                    style: GoogleFonts.montserrat(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
-                      color: headerTextColor,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "Notifications",
+                      style: GoogleFonts.montserrat(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: headerTextColor,
+                      ),
                     ),
-                  ),
+                    if (_notifications.isNotEmpty)
+                      TextButton.icon(
+                        onPressed: _confirmClearAll,
+                        style: TextButton.styleFrom(
+                          foregroundColor: isDark
+                              ? Colors.grey.shade300
+                              : const Color(0xFF64748B),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                        ),
+                        icon: const Icon(LucideIcons.trash2, size: 15),
+                        label: Text(
+                          "Clear All",
+                          style: GoogleFonts.montserrat(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
 
@@ -868,6 +955,24 @@ class _NotificationsPageState extends State<NotificationsPage> {
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                           color: timeTextColor,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      // Explicit per-item delete control. Swipe-to-dismiss
+                      // (Dismissible, above) already deletes a notification,
+                      // but not everyone discovers a swipe gesture -- this
+                      // gives the same _deleteNotification action a visible,
+                      // tappable target.
+                      InkWell(
+                        onTap: () => _deleteNotification(item),
+                        borderRadius: BorderRadius.circular(20),
+                        child: Padding(
+                          padding: const EdgeInsets.all(2.0),
+                          child: Icon(
+                            LucideIcons.x,
+                            size: 14,
+                            color: timeTextColor,
+                          ),
                         ),
                       ),
                     ],

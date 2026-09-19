@@ -6,12 +6,14 @@ class CustomNavigationBar extends StatelessWidget {
   final int currentIndex;
   final Function(int) onTap;
   final VoidCallback onReportPressed;
+  final bool isReportLoading;
 
   const CustomNavigationBar({
     super.key,
     required this.currentIndex,
     required this.onTap,
     required this.onReportPressed,
+    this.isReportLoading = false,
   });
 
   @override
@@ -60,10 +62,17 @@ class CustomNavigationBar extends StatelessWidget {
             top: -32, // Offsets the FAB button cleanly above the header line of the bar
             left: (MediaQuery.of(context).size.width / 2) - 36,
             child: GestureDetector(
-              onTap: onReportPressed,
+              // Disabling the tap target while a report is already being
+              // prepared makes the "needs pressing twice" symptom go away:
+              // instead of a second tap silently doing nothing (the old
+              // `if (_isLoadingLocation) return;` behavior in homepage.dart),
+              // there's now nothing tappable to notice, and the spinner
+              // below makes it visually obvious something is already
+              // happening.
+              onTap: isReportLoading ? null : onReportPressed,
               behavior: HitTestBehavior.opaque,
               child: Opacity(
-                opacity: 1.0,
+                opacity: isReportLoading ? 0.75 : 1.0,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -80,7 +89,19 @@ class CustomNavigationBar extends StatelessWidget {
                           )
                         ],
                       ),
-                      child: Image.asset('images/navbaricons/PlusIcon.png', width: 32, height: 32),
+                      child: isReportLoading
+                          ? const SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: Padding(
+                          padding: EdgeInsets.all(6.0),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        ),
+                      )
+                          : Image.asset('images/navbaricons/PlusIcon.png', width: 32, height: 32),
                     ),
                     const SizedBox(height: 4),
                     Text(

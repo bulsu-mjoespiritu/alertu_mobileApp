@@ -2078,6 +2078,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                     currentIndex: _currentIndex,
                     onTap: _onItemTapped,
                     onReportPressed: _handleReportIncident,
+                    isReportLoading: _isLoadingLocation,
                   ),
                 ),
               ),

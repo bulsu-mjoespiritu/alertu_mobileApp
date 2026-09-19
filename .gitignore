@@ -48,3 +48,5 @@ app.*.map.json
 .gradle/
 build/
 *.log
+# Widget Preview related
+.widget_preview/

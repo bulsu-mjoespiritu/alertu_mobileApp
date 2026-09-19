@@ -12,6 +12,7 @@ import 'package:alertu_flutter/complete_profile.dart';
 import 'package:alertu_flutter/terms_conditions.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:alertu_flutter/services/notification_service.dart';
+import 'package:alertu_flutter/services/notification_store.dart';
 import 'package:alertu_flutter/disable_modal.dart';
 
 class Wrapper extends ConsumerStatefulWidget {
@@ -185,6 +186,18 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
             _currentUserId = user?.uid;
             _fcmSyncedUserId = null;
 
+            // Notifications used to be purely in-memory, so they vanished
+            // whenever the app process died (closed, force-stopped, swiped
+            // from recent tasks) and could leak between accounts sharing a
+            // device. Drop the in-memory view immediately on any account
+            // change/logout, then -- if someone is now signed in -- load
+            // *that* account's own persisted notifications from disk. Saved
+            // notifications are never deleted by this; only an explicit
+            // "Clear All"/"X" does that (see NotificationStore.clear).
+            notificationStore.clearInMemoryOnly();
+            if (user != null) {
+              unawaited(notificationStore.loadForUser(user.uid));
+            }
           }
 
           // 🔴 IF USER IS LOGGED OUT: Return Login Widget
