@@ -638,13 +638,8 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
         body: LayoutBuilder(
           builder: (context, constraints) {
             return SingleChildScrollView(
-              // Scroll fix: see signup.dart -- onDrag closed the keyboard on
-              // the first scroll gesture, so this form (photo, incident type,
-              // additional details, etc.) couldn't be scrolled while the
-              // keyboard was open. "manual" fixes that; tap-outside still
-              // closes the keyboard normally.
               keyboardDismissBehavior:
-              ScrollViewKeyboardDismissBehavior.manual,
+              ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.fromLTRB(
                 contentPadding,
                 16.0,

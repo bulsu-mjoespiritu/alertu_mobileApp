@@ -32,7 +32,7 @@ class _MapSearchResult {
 }
 
 class _MapSearchBarState extends State<MapSearchBar>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with SingleTickerProviderStateMixin {
   final TextEditingController _addressController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
 
@@ -42,11 +42,6 @@ class _MapSearchBarState extends State<MapSearchBar>
   bool _isLoadingSearch = false;
   bool _hasSearchError = false;
 
-  // Tracks the keyboard's own height so didChangeMetrics (below) can tell
-  // "keyboard just closed" from "keyboard just opened" instead of firing on
-  // every metrics change (rotation, system UI, etc.).
-  double _lastKeyboardInset = 0;
-
   @override
   void initState() {
     super.initState();
@@ -54,18 +49,6 @@ class _MapSearchBarState extends State<MapSearchBar>
     // listening, so the bar never actually repainted on focus/blur. This
     // rebuilds the search bar alone -- not the map behind it.
     _focusNode.addListener(_handleFocusChanged);
-
-    // Bug fix ("stuck in typing status"): on Android, dismissing the
-    // keyboard with the back gesture/button hides the on-screen keyboard
-    // but does NOT clear the TextField's own focus -- that's a Flutter/
-    // platform quirk, not something this widget was doing wrong. The field
-    // was left reporting hasFocus == true with no keyboard actually open,
-    // so its focus ring (the bigger shadow below) and the results dropdown
-    // stayed as if the user were still typing. Watching the keyboard's own
-    // height and unfocusing the moment it closes -- if this field still
-    // holds focus at that point -- fixes it without touching how the field
-    // behaves for a normal tap-to-focus or a tap-outside dismiss.
-    WidgetsBinding.instance.addObserver(this);
   }
 
   void _handleFocusChanged() {
@@ -73,24 +56,7 @@ class _MapSearchBarState extends State<MapSearchBar>
   }
 
   @override
-  void didChangeMetrics() {
-    final double keyboardInset =
-        WidgetsBinding.instance.platformDispatcher.views.first.viewInsets
-            .bottom /
-        WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
-
-    final bool keyboardJustClosed =
-        _lastKeyboardInset > 0 && keyboardInset <= 0;
-    _lastKeyboardInset = keyboardInset;
-
-    if (keyboardJustClosed && _focusNode.hasFocus) {
-      _focusNode.unfocus();
-    }
-  }
-
-  @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _focusNode.removeListener(_handleFocusChanged);
     _debounceTimer?.cancel();
     _addressController.dispose();

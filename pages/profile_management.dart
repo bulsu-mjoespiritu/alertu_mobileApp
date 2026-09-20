@@ -738,11 +738,7 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 550),
                 child: SingleChildScrollView(
-                  // Scroll fix: see signup.dart -- onDrag closed the keyboard
-                  // on the first scroll gesture, so the form couldn't be
-                  // scrolled while the keyboard was open. "manual" fixes
-                  // that; tap-outside still closes the keyboard normally.
-                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   physics: const BouncingScrollPhysics(),
                   padding: EdgeInsets.fromLTRB(
                     20,

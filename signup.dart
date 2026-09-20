@@ -510,15 +510,7 @@ class _SignUpState extends ConsumerState<SignUp> {
 
               return Center(
                 child: SingleChildScrollView(
-                  // Scroll fix: onDrag closed the keyboard on the very first
-                  // scroll touch, so a field lower on the form (or one hidden
-                  // behind the keyboard) could never be reached by scrolling
-                  // while typing -- you had to close the keyboard first, look,
-                  // reopen it, and retype. "manual" lets the form scroll
-                  // freely with the keyboard still open; it still closes
-                  // normally on tap-outside (see main.dart) or the field's own
-                  // done/submit action.
-                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: EdgeInsets.fromLTRB(
                     horizontalPadding,
                     12.0,

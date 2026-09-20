@@ -22,8 +22,7 @@ class ReportsPage extends StatefulWidget {
   State<ReportsPage> createState() => _ReportsPageState();
 }
 
-class _ReportsPageState extends State<ReportsPage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStateMixin {
   // Bug fix / feature: tab order is now 0 = My Reports, 1 = Active
   // Reports, 2 = Reports History (was 0 = Active, 1 = History).
   int _selectedTabIndex = 0;
@@ -42,23 +41,10 @@ class _ReportsPageState extends State<ReportsPage>
 
   final Map<String, VideoPlayerController> _activeVideoControllers = {};
 
-  // Explicit FocusNode for the "Search incidents..." field so its focus can
-  // be tracked and corrected -- see _handleSearchFocusChanged below.
-  final FocusNode _searchFocusNode = FocusNode();
-  double _lastKeyboardInset = 0;
-
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-
-    // Bug fix ("stuck in typing status"): on Android, closing the keyboard
-    // with the back gesture/button hides the keyboard but does not clear
-    // the field's own focus, so its focused border stayed lit even with no
-    // keyboard open. Watching the keyboard's own height and unfocusing the
-    // moment it closes -- only if this field still holds focus -- fixes
-    // that without changing normal tap-to-focus or tap-outside behavior.
-    WidgetsBinding.instance.addObserver(this);
     // The Reports tab stays mounted inside Homepage's IndexedStack, so it
     // never re-runs initState after a report is submitted. Listening to the
     // local submission ledger is what makes a brand-new report show up in
@@ -75,25 +61,7 @@ class _ReportsPageState extends State<ReportsPage>
   }
 
   @override
-  void didChangeMetrics() {
-    final double keyboardInset =
-        WidgetsBinding.instance.platformDispatcher.views.first.viewInsets
-            .bottom /
-        WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
-
-    final bool keyboardJustClosed =
-        _lastKeyboardInset > 0 && keyboardInset <= 0;
-    _lastKeyboardInset = keyboardInset;
-
-    if (keyboardJustClosed && _searchFocusNode.hasFocus) {
-      _searchFocusNode.unfocus();
-    }
-  }
-
-  @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _searchFocusNode.dispose();
     myReportsStore.submissions.removeListener(_handleSubmissionRecorded);
     _tabController.dispose();
     for (var controller in _activeVideoControllers.values) {
@@ -893,7 +861,6 @@ class _ReportsPageState extends State<ReportsPage>
                       child: SizedBox(
                         height: 44,
                         child: TextField(
-                          focusNode: _searchFocusNode,
                           onChanged: (value) => setState(() => _searchQuery = value.toLowerCase()),
                           style: _textStyle(fontSize: 13, color: isDark ? Colors.white : Colors.black87),
                           textAlignVertical: TextAlignVertical.center,

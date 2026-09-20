@@ -3,92 +3,52 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
-import 'email_sending.dart';
+import 'package:intl_phone_field/intl_phone_field.dart';
 
-// Global loading tracker for the registration flow
-final signUpLoadingProvider = StateProvider<bool>((ref) => false);
+import 'homepage.dart';
 
-class SignUp extends ConsumerStatefulWidget {
-  const SignUp({super.key});
+final completeProfileLoadingProvider = StateProvider<bool>((ref) => false);
+
+class CompleteProfile extends ConsumerStatefulWidget {
+  final User user;
+  const CompleteProfile({super.key, required this.user});
 
   @override
-  ConsumerState<SignUp> createState() => _SignUpState();
+  ConsumerState<CompleteProfile> createState() => _CompleteProfileState();
 }
 
-class _SignUpState extends ConsumerState<SignUp> {
+class _CompleteProfileState extends ConsumerState<CompleteProfile> {
   final _formKey = GlobalKey<FormState>();
-  final TextEditingController name = TextEditingController();
-  final TextEditingController email = TextEditingController();
   final TextEditingController address = TextEditingController();
-  final TextEditingController password = TextEditingController();
-  final TextEditingController confirmPassword = TextEditingController();
 
   String completePhoneNumber = "";
-  bool _obscurePassword = true;
-  bool _obscureConfirmPassword = true;
   bool _isPhoneValid = false;
   bool _isDpaAccepted = false;
-
   final List<_SignupEmergencyContact> _emergencyContacts = <_SignupEmergencyContact>[];
   bool _contactsCompleted = false;
-
-  // Real-time strength trackers
-  String _strengthText = "Weak";
-  Color _strengthColor = Colors.red;
-  double _strengthProgress = 0.33;
 
   @override
   void initState() {
     super.initState();
-    password.addListener(_evaluatePasswordStrength);
+
   }
 
   @override
   void dispose() {
-    name.dispose();
-    email.dispose();
     address.dispose();
-    password.dispose();
-    confirmPassword.dispose();
+
     super.dispose();
   }
 
-  void _evaluatePasswordStrength() {
-    final text = password.text;
-    final uppercaseCount = text.replaceAll(RegExp(r'[^A-Z]'), '').length;
-    final specialCharCount = text.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
-    // Bug fix: rules changed from "exactly 15+ chars, exactly 1 uppercase,
-    // exactly 1 special char" to "8-15 chars, at least 1 of each".
-    final bool hasValidLength = text.length >= 8 && text.length <= 15;
 
-    if (text.length < 8) {
-      setState(() {
-        _strengthText = "Weak";
-        _strengthColor = Colors.red;
-        _strengthProgress = 0.33;
-      });
-    } else if (hasValidLength && uppercaseCount >= 1 && specialCharCount >= 1) {
-      setState(() {
-        _strengthText = "Strong";
-        _strengthColor = Colors.green;
-        _strengthProgress = 1.0;
-      });
-    } else {
-      setState(() {
-        _strengthText = "Moderate";
-        _strengthColor = Colors.amber;
-        _strengthProgress = 0.66;
-      });
-    }
-  }
 
-  void _showSnackBar(String title, String message, {Color? backgroundColor}) {
+  void _showSnackBar(String title, String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        backgroundColor: backgroundColor ?? const Color(0xff0d47a1),
+        backgroundColor: const Color(0xff0d47a1),
         behavior: SnackBarBehavior.floating,
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -102,137 +62,67 @@ class _SignUpState extends ConsumerState<SignUp> {
     );
   }
 
-  /// Atomically fetches and increments the next citizen ID from counters/citizens
-  Future<String> _getNextCitizenID() async {
-    final counterRef = FirebaseFirestore.instance.collection('counters').doc('citizens');
-
-    return FirebaseFirestore.instance.runTransaction((transaction) async {
-      final counterDoc = await transaction.get(counterRef);
-
-      int currentCount = 0;
-      if (counterDoc.exists && counterDoc.data() != null) {
-        final data = counterDoc.data()!;
-        if (data.containsKey('currentCount')) {
-          currentCount = (data['currentCount'] as num).toInt();
-        } else if (data.containsKey('count')) {
-          currentCount = (data['count'] as num).toInt();
-        }
-      }
-
-      final nextCount = currentCount + 1;
-      final formattedID = 'CID${nextCount.toString().padLeft(8, '0')}';
-
-      if (counterDoc.exists) {
-        transaction.update(counterRef, {
-          'currentCount': nextCount,
-          'count': nextCount,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      } else {
-        transaction.set(counterRef, {
-          'currentCount': nextCount,
-          'count': nextCount,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      }
-
-      return formattedID;
-    });
-  }
-
-  Future<void> signUp() async {
+  Future<void> saveProfile() async {
     if (!_formKey.currentState!.validate() || !_isPhoneValid || completePhoneNumber.isEmpty) {
-      _showSnackBar("Registration Blocked", "Please resolve form errors before submitting.");
+      _showSnackBar("Incomplete Form", "Please fix the errors in the form before submitting.");
       return;
     }
 
     if (!_contactsCompleted) {
-      _showSnackBar("Emergency Contacts Required", "Please add at least one emergency contact before registering.", backgroundColor: Colors.orange.shade800);
+      _showSnackBar("Emergency Contacts Required", "Please add at least one emergency contact before finishing setup.");
       return;
     }
 
     if (!_isDpaAccepted) {
-      _showSnackBar(
-        "Consent Required",
-        "Please accept the data privacy terms to register.",
-        backgroundColor: Colors.amber.shade800,
-      );
+      _showSnackBar("Consent Required", "Please check the consent box to complete your registration.");
       return;
     }
 
-    // Trigger loader
-    ref.read(signUpLoadingProvider.notifier).state = true;
-    UserCredential? userCredential;
+    ref.read(completeProfileLoadingProvider.notifier).state = true;
 
     try {
-      userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: email.text.trim(),
-        password: password.text,
-      );
+      final googleDisplayName = widget.user.displayName?.trim() ?? '';
+      final customProfileData = "$googleDisplayName||$completePhoneNumber||${address.text.trim()}";
+      await widget.user.updateDisplayName(customProfileData);
+      await widget.user.reload();
 
-      String? uid = userCredential.user?.uid;
+      await FirebaseFirestore.instance.collection('citizens').doc(widget.user.uid).set({
+        'id': widget.user.uid,
+        'fullName': googleDisplayName,
+        'email': widget.user.email?.trim() ?? '',
 
-      if (uid != null) {
-        // 1. Generate sequential citizen ID atomically
-        String citizenID = await _getNextCitizenID();
+        'phoneNumber': completePhoneNumber,
+        'zone': address.text.trim(),
+        'status': 'Active',
+        'dpaAccepted': true,
+        'dpaAcceptedAt': FieldValue.serverTimestamp(),
+        'emailVerified': true,
+        'emergencyContacts': _emergencyContacts.map((contact) => {'name': contact.name.trim(), 'phone': contact.phone.trim(), 'relation': contact.relation}).toList(),
+        'legacyContactPayload': _emergencyContacts.map((contact) => '${contact.name.trim()}|${contact.phone.trim()}|${contact.relation}').join('##'),
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
-        String customProfileData = "${name.text.trim()}||$completePhoneNumber||${address.text.trim()}";
-        await userCredential.user?.updateDisplayName(customProfileData);
-
-        // 2. Save document with citizenID included
-        await FirebaseFirestore.instance.collection('citizens').doc(uid).set({
-          'citizenID': citizenID,
-          'id': uid,
-          'authUid': uid,
-          'fullName': name.text.trim(),
-          'email': email.text.trim(),
-          'phoneNumber': completePhoneNumber,
-          'zone': address.text.trim(),
-          'status': 'Active',
-          'dpaAccepted': true,
-          'dpaAcceptedAt': FieldValue.serverTimestamp(),
-          'emailVerified': false,
-          'emergencyContacts': _emergencyContacts.map((contact) => {'name': contact.name.trim(), 'phone': contact.phone.trim(), 'relation': contact.relation}).toList(),
-          'legacyContactPayload': _emergencyContacts.map((contact) => '${contact.name.trim()}|${contact.phone.trim()}|${contact.relation}').join('##'),
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-
-        if (mounted) {
-          Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => const EmailSendingScreen()),
-                (route) => false,
-          );
-        }
-      }
-    } on FirebaseAuthException catch (e) {
       if (mounted) {
-        _showSnackBar("Sign Up Error", e.message ?? "Error encountered.");
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const Homepage()),
+              (route) => false,
+        );
       }
     } catch (e) {
-      // Rollback Auth creation if database write fails
-      if (userCredential?.user != null) {
-        try {
-          await userCredential!.user!.delete();
-        } catch (_) {}
-      }
       if (mounted) {
-        _showSnackBar("Database Error", "Auth succeeded but failed to save profile data.");
+        _showSnackBar("Error", "Could not save your profile. Please try again.");
       }
-      debugPrint("Firestore Sync Failure: $e");
     } finally {
       if (mounted) {
-        ref.read(signUpLoadingProvider.notifier).state = false;
+        ref.read(completeProfileLoadingProvider.notifier).state = false;
       }
     }
   }
 
-
   Future<List<Map<String, String>>?> _showEmergencyContactsSheet() async {
     final contacts = _emergencyContacts.isEmpty
         ? <_SignupEmergencyContact>[_SignupEmergencyContact()]
-        : _emergencyContacts
-        .map((contact) => _SignupEmergencyContact.from(contact))
-        .toList();
+        : _emergencyContacts.map((contact) => _SignupEmergencyContact.from(contact)).toList();
     final formKey = GlobalKey<FormState>();
 
     return showModalBottomSheet<List<Map<String, String>>>(
@@ -287,7 +177,8 @@ class _SignUpState extends ConsumerState<SignUp> {
                                     Row(
                                       children: [
                                         Expanded(child: Text('Contact #${index + 1}', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xff0d47a1)))),
-                                        if (contacts.length > 1) IconButton(onPressed: () => setSheetState(() => contacts.removeAt(index)), icon: const Icon(Icons.delete_outline, color: Colors.redAccent)),
+                                        if (contacts.length > 1)
+                                          IconButton(onPressed: () => setSheetState(() => contacts.removeAt(index)), icon: const Icon(Icons.delete_outline, color: Colors.redAccent)),
                                       ],
                                     ),
                                     TextFormField(
@@ -407,21 +298,41 @@ class _SignUpState extends ConsumerState<SignUp> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 14, 12, 8),
-                      child: Row(children: [const Expanded(child: Text('Terms and Conditions', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xff0d47a1)))), IconButton(onPressed: () => Navigator.pop(sheetContext), icon: const Icon(Icons.close))]),
+                      child: Row(
+                        children: [
+                          const Expanded(child: Text('Terms and Conditions', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xff0d47a1)))),
+                          IconButton(onPressed: () => Navigator.pop(sheetContext), icon: const Icon(Icons.close)),
+                        ],
+                      ),
                     ),
                     Expanded(
                       child: SingleChildScrollView(
                         controller: scrollController,
                         padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: terms.map((text) => Padding(padding: const EdgeInsets.only(bottom: 18), child: Text(text, style: const TextStyle(color: Colors.black87, fontSize: 13, height: 1.45)))).toList()),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: terms.map((text) => Padding(padding: const EdgeInsets.only(bottom: 18), child: Text(text, style: const TextStyle(color: Colors.black87, fontSize: 13, height: 1.45)))).toList(),
+                        ),
                       ),
                     ),
                     Padding(
                       padding: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).viewInsets.bottom + 16),
                       child: Column(
                         children: [
-                          Row(children: [Checkbox(value: accepted, onChanged: reachedBottom ? (value) => setSheetState(() => accepted = value ?? false) : null), const Expanded(child: Text('I have fully read and accept all rules written above.', style: TextStyle(fontSize: 13)))]),
-                          SizedBox(width: double.infinity, child: ElevatedButton(onPressed: reachedBottom && accepted ? () => Navigator.pop(sheetContext, true) : null, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xff0d47a1), foregroundColor: Colors.white), child: const Text('Accept Terms & Conditions'))),
+                          Row(
+                            children: [
+                              Checkbox(value: accepted, onChanged: reachedBottom ? (value) => setSheetState(() => accepted = value ?? false) : null),
+                              const Expanded(child: Text('I have fully read and accept all rules written above.', style: TextStyle(fontSize: 13))),
+                            ],
+                          ),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: reachedBottom && accepted ? () => Navigator.pop(sheetContext, true) : null,
+                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xff0d47a1), foregroundColor: Colors.white),
+                              child: const Text('Accept Terms & Conditions'),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -433,7 +344,7 @@ class _SignUpState extends ConsumerState<SignUp> {
         );
       },
     );
-    // Wait for the bottom-sheet route's closing lifecycle before disposing.
+
     await Future<void>.delayed(const Duration(milliseconds: 350));
     if (!scrollController.hasClients) {
       scrollController.dispose();
@@ -459,7 +370,7 @@ class _SignUpState extends ConsumerState<SignUp> {
 
   @override
   Widget build(BuildContext context) {
-    final isLoading = ref.watch(signUpLoadingProvider);
+    final isLoading = ref.watch(completeProfileLoadingProvider);
 
     return Theme(
       data: ThemeData.light().copyWith(
@@ -510,26 +421,14 @@ class _SignUpState extends ConsumerState<SignUp> {
 
               return Center(
                 child: SingleChildScrollView(
-                  // Scroll fix: onDrag closed the keyboard on the very first
-                  // scroll touch, so a field lower on the form (or one hidden
-                  // behind the keyboard) could never be reached by scrolling
-                  // while typing -- you had to close the keyboard first, look,
-                  // reopen it, and retype. "manual" lets the form scroll
-                  // freely with the keyboard still open; it still closes
-                  // normally on tap-outside (see main.dart) or the field's own
-                  // done/submit action.
-                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: EdgeInsets.fromLTRB(
                     horizontalPadding,
                     12.0,
                     horizontalPadding,
-                    // Keyboard smoothness: this Scaffold already has
-                    // resizeToAvoidBottomInset: true, which shrinks the body
-                    // by the keyboard height. Adding viewInsets.bottom here
-                    // as well applied the SAME inset twice, so the form
-                    // over-scrolled and visibly jittered as the two
-                    // adjustments fought each other on every animation
-                    // frame. One adjustment is enough.
+                    // Double keyboard inset removed -- the Scaffold's own
+                    // resizeToAvoidBottomInset already makes room, and
+                    // adding it again here caused the jittery over-scroll.
                     12.0 + 24.0,
                   ),
                   child: ConstrainedBox(
@@ -541,37 +440,11 @@ class _SignUpState extends ConsumerState<SignUp> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           const Text(
-                            'Create Account',
+                            'Complete Profile',
                             style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xff0d47a1)),
                           ),
                           const SizedBox(height: 24),
 
-                          // 1. Name
-                          TextFormField(
-                            controller: name,
-                            style: const TextStyle(color: Colors.black87),
-                            decoration: const InputDecoration(hintText: 'Full Name'),
-                            validator: (v) => (v == null || v.trim().length < 2) ? 'Provide a valid name' : null,
-                          ),
-                          const SizedBox(height: 14),
-
-                          // 2. Email
-                          TextFormField(
-                            controller: email,
-                            style: const TextStyle(color: Colors.black87),
-                            keyboardType: TextInputType.emailAddress,
-                            decoration: InputDecoration(
-                              hintText: 'Email Address',
-                              prefixIcon: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Image.asset('images/emailicon.png', height: 20, width: 20),
-                              ),
-                            ),
-                            validator: (v) => (v == null || !v.contains('@')) ? 'Provide a valid email address' : null,
-                          ),
-                          const SizedBox(height: 14),
-
-                          // 3. International Phone Field
                           IntlPhoneField(
                             style: const TextStyle(color: Colors.black87),
                             dropdownTextStyle: const TextStyle(color: Colors.black87),
@@ -593,8 +466,6 @@ class _SignUpState extends ConsumerState<SignUp> {
                             },
                           ),
                           const SizedBox(height: 14),
-
-                          // 4. Home Address
                           TextFormField(
                             controller: address,
                             style: const TextStyle(color: Colors.black87),
@@ -602,93 +473,8 @@ class _SignUpState extends ConsumerState<SignUp> {
                             validator: (v) => (v == null || v.trim().isEmpty) ? 'Home address is required' : null,
                           ),
                           const SizedBox(height: 14),
-
-                          // 5. Password
-                          TextFormField(
-                            controller: password,
-                            style: const TextStyle(color: Colors.black87),
-                            obscureText: _obscurePassword,
-                            decoration: InputDecoration(
-                              hintText: 'Password',
-                              prefixIcon: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Image.asset('images/passwordicon.png', height: 20, width: 20),
-                              ),
-                              suffixIcon: IconButton(
-                                icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility, color: const Color(0xff0d47a1)),
-                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                              ),
-                            ),
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Password cannot be empty';
-                              // Bug fix: was min 15 chars with exactly-1
-                              // uppercase and exactly-1 special char. Now
-                              // 8-15 chars, at least 1 of each.
-                              if (v.length < 8 || v.length > 15) {
-                                return 'Password must be 8–15 characters';
-                              }
-
-                              final uppercaseCount = v.replaceAll(RegExp(r'[^A-Z]'), '').length;
-                              if (uppercaseCount < 1) return 'Must contain at least 1 uppercase letter';
-
-                              final specialCharCount = v.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
-                              if (specialCharCount < 1) return 'Must contain at least 1 special character';
-
-                              return null;
-                            },
-                          ),
-                          const SizedBox(height: 8),
-
-                          // Password Strength Gauge
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text('Password Strength:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                                  Text(
-                                    _strengthText,
-                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _strengthColor),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              LinearProgressIndicator(
-                                value: _strengthProgress,
-                                backgroundColor: Colors.grey.shade200,
-                                valueColor: AlwaysStoppedAnimation<Color>(_strengthColor),
-                                minHeight: 5,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-
-                          // 6. Confirm Password
-                          TextFormField(
-                            controller: confirmPassword,
-                            style: const TextStyle(color: Colors.black87),
-                            obscureText: _obscureConfirmPassword,
-                            decoration: InputDecoration(
-                              hintText: 'Confirm Password',
-                              prefixIcon: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Image.asset('images/passwordicon.png', height: 20, width: 20),
-                              ),
-                              suffixIcon: IconButton(
-                                icon: Icon(_obscureConfirmPassword ? Icons.visibility_off : Icons.visibility, color: const Color(0xff0d47a1)),
-                                onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                              ),
-                            ),
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Please confirm your password';
-                              if (v != password.text) return 'Passwords do not match';
-                              return null;
-                            },
-                          ),
                           const SizedBox(height: 20),
 
-                          // 7. Required Emergency Contacts and Terms
                           OutlinedButton.icon(
                             onPressed: isLoading ? null : _openEmergencyContacts,
                             icon: Icon(_contactsCompleted ? Icons.check_circle : Icons.contact_phone_outlined),
@@ -703,7 +489,7 @@ class _SignUpState extends ConsumerState<SignUp> {
                           const SizedBox(height: 12),
                           FormField<bool>(
                             initialValue: _isDpaAccepted,
-                            validator: (_) => _isDpaAccepted ? null : 'Required field',
+                            validator: (_) => _isDpaAccepted ? null : 'Required',
                             builder: (formFieldState) {
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -715,23 +501,31 @@ class _SignUpState extends ConsumerState<SignUp> {
                                       IconButton(onPressed: isLoading ? null : _openTerms, icon: const Icon(Icons.open_in_new, color: Color(0xff0d47a1)), tooltip: 'Read Terms and Conditions'),
                                     ],
                                   ),
-                                  if (formFieldState.hasError) Padding(padding: const EdgeInsets.only(left: 12), child: Text(formFieldState.errorText ?? '', style: TextStyle(color: Colors.red.shade700, fontSize: 12))),
+                                  if (formFieldState.hasError)
+                                    Padding(padding: const EdgeInsets.only(left: 12), child: Text(formFieldState.errorText ?? '', style: TextStyle(color: Colors.red.shade700, fontSize: 12))),
                                 ],
                               );
                             },
                           ),
-                          const SizedBox(height: 24),
-
-                          // 8. Submit Button
+                          const SizedBox(height: 28),
                           ElevatedButton(
-                            onPressed: signUp,
+                            onPressed: saveProfile,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xff0d47a1),
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                             ),
-                            child: const Text("Register Account", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            child: const Text(
+                              "Finish Setup",
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => FirebaseAuth.instance.signOut(),
+                            child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
                           ),
                         ],
                       ),
