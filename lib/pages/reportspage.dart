@@ -8,6 +8,7 @@ import 'package:video_player/video_player.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 // Import your subpages
 import '../subpages/reportshistory_page.dart';
@@ -21,10 +22,14 @@ class ReportsPage extends StatefulWidget {
 }
 
 class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStateMixin {
+  // Bug fix / feature: tab order is now 0 = My Reports, 1 = Active
+  // Reports, 2 = Reports History (was 0 = Active, 1 = History).
   int _selectedTabIndex = 0;
   late TabController _tabController;
   List<dynamic> _approvedReports = [];
+  List<dynamic> _myReports = [];
   bool _isLoading = true;
+  bool _isLoadingMyReports = true;
   String _searchQuery = "";
   int _resolvedCount = 0;
 
@@ -38,7 +43,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _loadData();
   }
 
@@ -52,10 +57,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Future<void> _loadData() async {
-    if (mounted) setState(() => _isLoading = true);
+    if (mounted) {
+      setState(() {
+        _isLoading = true;
+        _isLoadingMyReports = true;
+      });
+    }
     await Future.wait([
       _fetchReports(),
       _fetchResolvedCount(),
+      _fetchMyReports(),
     ]);
   }
 
@@ -150,6 +161,51 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     }
   }
 
+  /// Fetches every report the signed-in citizen has personally submitted,
+  /// regardless of status (pending/verified/resolved/rejected) -- this is
+  /// what makes "My Reports" different from "Active Reports" (globally
+  /// approved/active only) and "Reports History" (globally resolved only).
+  /// Queried directly against Firestore by `authUid`, the same field
+  /// report_submission.dart writes on every submitted report, rather than
+  /// a backend query param whose exact name/support isn't confirmed.
+  Future<void> _fetchMyReports() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || uid.isEmpty) {
+      if (mounted) setState(() => _isLoadingMyReports = false);
+      return;
+    }
+
+    try {
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('reports')
+          .where('authUid', isEqualTo: uid)
+          .get();
+
+      final List<dynamic> fetchedList = querySnapshot.docs.map((doc) {
+        final data = Map<String, dynamic>.from(doc.data());
+        data['id'] ??= doc.id;
+        data['reportId'] ??= doc.id;
+        return data;
+      }).toList();
+
+      fetchedList.sort((a, b) {
+        DateTime timeA = _parseDateTime(a['submittedAt'] ?? a['createdAt'] ?? a['timestamp']);
+        DateTime timeB = _parseDateTime(b['submittedAt'] ?? b['createdAt'] ?? b['timestamp']);
+        return timeB.compareTo(timeA);
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _myReports = fetchedList;
+      });
+      debugPrint("✅ My Reports synced: ${_myReports.length} items.");
+    } catch (e) {
+      debugPrint("❌ My Reports Sync Error: $e");
+    } finally {
+      if (mounted) setState(() => _isLoadingMyReports = false);
+    }
+  }
+
   DateTime _parseDateTime(dynamic rawTimestamp) {
     if (rawTimestamp == null) return DateTime.fromMillisecondsSinceEpoch(0);
     try {
@@ -159,7 +215,6 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     } catch (_) {}
     return DateTime.fromMillisecondsSinceEpoch(0);
   }
-
   String _formatDateTime(dynamic rawTimestamp) {
     final dt = _parseDateTime(rawTimestamp);
     if (dt.millisecondsSinceEpoch == 0) return 'Recently verified';
@@ -530,6 +585,28 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       return matchesSearch && matchesType && matchesSeverity && matchesDate;
     }).toList();
 
+    // Same multi-criteria filter, applied to the current citizen's own
+    // reports for the "My Reports" tab.
+    final List<dynamic> filteredMyReports = _myReports.where((report) {
+      final String title = (report['reportTitle'] ?? report['incidentType'] ?? '').toString().toLowerCase();
+      final String desc = (report['adminNotes'] ?? report['location']?['address'] ?? report['address'] ?? '').toString().toLowerCase();
+      final String type = (report['incidentType'] ?? '').toString().toLowerCase();
+      final String sev = (report['severity'] ?? '').toString().toLowerCase();
+      final DateTime reportDate = _parseDateTime(report['submittedAt'] ?? report['createdAt'] ?? report['timestamp']);
+
+      final matchesSearch = title.contains(_searchQuery) || desc.contains(_searchQuery);
+      final matchesType = _selectedIncidentType == null || type.contains(_selectedIncidentType!.toLowerCase());
+      final matchesSeverity = _selectedSeverity == null || sev == _selectedSeverity!.toLowerCase();
+
+      bool matchesDate = true;
+      if (_selectedDateRange != null) {
+        matchesDate = reportDate.isAfter(_selectedDateRange!.start.subtract(const Duration(days: 1))) &&
+            reportDate.isBefore(_selectedDateRange!.end.add(const Duration(days: 1)));
+      }
+
+      return matchesSearch && matchesType && matchesSeverity && matchesDate;
+    }).toList();
+
     // Total Incidents = Active + Resolved
     final int totalCount = filteredReports.length + _resolvedCount;
 
@@ -642,16 +719,17 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   decoration: BoxDecoration(color: tabContainerBg, borderRadius: BorderRadius.circular(14)),
                   child: Row(
                     children: [
-                      _buildCustomTab("Active Reports", 0, isDark),
-                      _buildCustomTab("Report History", 1, isDark),
+                      _buildCustomTab("My Reports", 0, isDark),
+                      _buildCustomTab("Active Reports", 1, isDark),
+                      _buildCustomTab("Report History", 2, isDark),
                     ],
                   ),
                 ),
               ),
             ),
 
-            // Dynamic Stats Bar (Active, Resolved, Total)
-            if (_selectedTabIndex == 0)
+            // Dynamic Stats Bar (Active, Resolved, Total) -- Active Reports tab only
+            if (_selectedTabIndex == 1)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -695,31 +773,47 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               ),
 
             // Tab Content Output with Animated Transition
-            _isLoading
-                ? SliverPadding(
-              padding: const EdgeInsets.all(16),
-              sliver: SliverToBoxAdapter(child: _buildIncidentSkeletons(isDark)),
-            )
-                : (_selectedTabIndex == 0
-                ? _buildGroupedActiveReports(filteredReports, isDark, theme)
-                : SliverToBoxAdapter(
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 300),
-                opacity: _selectedTabIndex == 1 ? 1.0 : 0.0,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                  child: SizedBox(
-                    height: 650,
-                    child: ReportsHistoryPage(
-                      searchQuery: _searchQuery,
-                      selectedIncidentType: _selectedIncidentType,
-                      selectedSeverity: _selectedSeverity,
-                      selectedDateRange: _selectedDateRange,
+            // 0 = My Reports (this citizen's own submissions, any status)
+            // 1 = Active Reports (globally approved/active)
+            // 2 = Reports History (globally resolved)
+            if (_selectedTabIndex == 0)
+              (_isLoadingMyReports
+                  ? SliverPadding(
+                padding: const EdgeInsets.all(16),
+                sliver: SliverToBoxAdapter(child: _buildIncidentSkeletons(isDark)),
+              )
+                  : _buildGroupedActiveReports(
+                filteredMyReports,
+                isDark,
+                theme,
+                emptyStateText: "You haven't submitted any reports yet.",
+              ))
+            else if (_selectedTabIndex == 1)
+              (_isLoading
+                  ? SliverPadding(
+                padding: const EdgeInsets.all(16),
+                sliver: SliverToBoxAdapter(child: _buildIncidentSkeletons(isDark)),
+              )
+                  : _buildGroupedActiveReports(filteredReports, isDark, theme))
+            else
+              SliverToBoxAdapter(
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 300),
+                  opacity: _selectedTabIndex == 2 ? 1.0 : 0.0,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    child: SizedBox(
+                      height: 650,
+                      child: ReportsHistoryPage(
+                        searchQuery: _searchQuery,
+                        selectedIncidentType: _selectedIncidentType,
+                        selectedSeverity: _selectedSeverity,
+                        selectedDateRange: _selectedDateRange,
+                      ),
                     ),
                   ),
                 ),
               ),
-            )),
           ],
         ),
       ),
@@ -727,14 +821,19 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   /// Groups active reports with chronological headers (Today, Yesterday, Date)
-  Widget _buildGroupedActiveReports(List<dynamic> reports, bool isDark, ThemeData theme) {
+  Widget _buildGroupedActiveReports(
+      List<dynamic> reports,
+      bool isDark,
+      ThemeData theme, {
+        String emptyStateText = "No active incidents reported.",
+      }) {
     if (reports.isEmpty) {
       return SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.all(32.0),
           child: Center(
             child: Text(
-              "No active incidents reported.",
+              emptyStateText,
               style: _textStyle(fontSize: 14, color: isDark ? Colors.grey.shade400 : const Color(0xFF64748B)),
             ),
           ),
@@ -878,7 +977,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
   Widget _buildIncidentCard(dynamic report, bool isDark, ThemeData theme) {
     final String title = (report['reportTitle'] ?? report['incidentType'] ?? 'INCIDENT').toString().toUpperCase();
-    final String description = report['adminNotes'] ?? report['location']?['address'] ?? 'Verified emergency incident zone.';
+    final String description = report['adminNotes'] ?? report['location']?['address'] ?? report['address'] ?? 'Verified emergency incident zone.';
     final String hazardType = (report['incidentType'] ?? 'General Emergency').toString();
     final String severity = (report['severity'] ?? 'LOW').toUpperCase();
     final String typeLower = hazardType.toLowerCase();

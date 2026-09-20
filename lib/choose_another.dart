@@ -217,6 +217,7 @@ class _ChooseAnotherPageState extends State<ChooseAnotherPage> with SingleTicker
         ),
       ),
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         body: LayoutBuilder(
           builder: (context, constraints) {
             final bool isWideScreen = constraints.maxWidth > 650;

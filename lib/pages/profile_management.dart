@@ -397,9 +397,16 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
   }
 
   // --- Upload the pending avatar only during Save Changes ---
-  Future<void> _uploadPendingAvatar() async {
+  // Bug fix: this used to swallow every failure internally (its own
+  // try/catch showed a SnackBar and returned void), so _saveProfile below
+  // had no way to know the upload had failed. It unconditionally cleared
+  // _pendingAvatarFile and told the user "Profile updated successfully!"
+  // regardless -- the picked photo was silently discarded with no way to
+  // retry, and the failure was invisible. Now returns whether it actually
+  // succeeded so the caller can act on that.
+  Future<bool> _uploadPendingAvatar() async {
     final image = _pendingAvatarFile;
-    if (image == null) return;
+    if (image == null) return true; // Nothing to upload isn't a failure.
     try {
 
       setState(() => _isUploadingAvatar = true);
@@ -478,29 +485,26 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
               _photoUrl = cacheBustedUrl;
               _isUploadingAvatar = false;
             });
-
-            _showSnackBar(
-              "Avatar Updated",
-              "Profile photo updated successfully!",
-              backgroundColor: const Color(0xFF2E7D32),
-            );
           }
+          return true;
         } else {
-          _loadUserData();
+          // Server responded but didn't return a usable URL -- resync from
+          // the server as a best effort, but this is still a failure as
+          // far as the caller is concerned: we can't confirm the picked
+          // photo actually saved.
+          await _loadUserData();
+          if (mounted) setState(() => _isUploadingAvatar = false);
+          return false;
         }
       } else {
         throw Exception("Server returned code ${response.statusCode}: ${response.body}");
       }
     } catch (e) {
+      debugPrint('⚠️ Avatar upload failed: $e');
       if (mounted) {
         setState(() => _isUploadingAvatar = false);
-        _showSnackBar(
-          "Upload Failed",
-          e.toString().replaceAll('Exception: ', ''),
-          backgroundColor: const Color(0xFFC62828),
-        );
       }
-      rethrow;
+      return false;
     }
   }
 
@@ -588,10 +592,17 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
         debugPrint('⚠️ Backend API sync warning: $backendErr');
       }
 
+      // Bug fix: this used to always await _uploadPendingAvatar() and then
+      // unconditionally proceed as if everything succeeded -- the method
+      // swallowed its own failures internally, so a failed upload still
+      // ended with _pendingAvatarFile cleared (picked photo discarded, no
+      // way to retry) and a "Profile updated successfully!" message. Now
+      // the outcome is tracked and reflected honestly to the user.
+      bool avatarSaveSucceeded = true;
       if (_pendingAvatarRemoval) {
         await _deleteAvatarOnServer();
       } else if (_pendingAvatarFile != null) {
-        await _uploadPendingAvatar();
+        avatarSaveSucceeded = await _uploadPendingAvatar();
       }
 
       try {
@@ -605,15 +616,27 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           _isSaving = false;
           _isEditing = false;
           _savedPhotoUrl = _photoUrl;
-          _pendingAvatarFile = null;
+          // Only clear the pending file once its upload actually
+          // succeeded -- otherwise the user would have no way to retry.
+          if (avatarSaveSucceeded) {
+            _pendingAvatarFile = null;
+          }
           _pendingAvatarRemoval = false;
         });
 
-        _showSnackBar(
-          "Success",
-          "Profile updated successfully!",
-          backgroundColor: const Color(0xFF2E7D32),
-        );
+        if (avatarSaveSucceeded) {
+          _showSnackBar(
+            "Success",
+            "Profile updated successfully!",
+            backgroundColor: const Color(0xFF2E7D32),
+          );
+        } else {
+          _showSnackBar(
+            "Partially Saved",
+            "Your details were saved, but the new photo failed to upload. Please try again.",
+            backgroundColor: const Color(0xFFEF6C00),
+          );
+        }
       }
     } on FirebaseAuthException catch (authErr) {
       if (mounted) {

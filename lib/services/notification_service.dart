@@ -13,6 +13,52 @@ import 'notification_store.dart';
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   debugPrint('🚨 Background Message Received: ${message.messageId}');
+
+  // Bug fix: this used to only log. A background isolate can't reach the
+  // main isolate's in-memory NotificationStore (isolates don't share
+  // memory), so notifications that arrive while the app is backgrounded or
+  // killed -- including when the system suppresses the visible banner
+  // under Do Not Disturb -- never made it into the Notifications page.
+  // NotificationStore's persistence is a plain JSON file on disk keyed by
+  // uid, which (unlike in-memory state) IS shared across isolates, so
+  // loading/writing through the same store class here reaches the same
+  // file the main isolate reads back on next launch.
+  try {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return; // No signed-in account to scope this save to.
+
+    await notificationStore.loadForUser(uid);
+
+    final notification = message.notification;
+    final String? title = notification?.title?.trim().isNotEmpty == true
+        ? notification!.title!.trim()
+        : (message.data['title'] as String?)?.trim();
+    final String? body = notification?.body?.trim().isNotEmpty == true
+        ? notification!.body!.trim()
+        : (message.data['body'] as String?)?.trim();
+
+    if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
+      // Fully silent data-only push with nothing to show the user --
+      // nothing worth saving to the visible notifications list.
+      return;
+    }
+
+    final String id = message.messageId ??
+        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}';
+
+    await notificationStore.addOrUpdateAndFlush(
+      NotificationItem(
+        id: id,
+        title: (title == null || title.isEmpty) ? 'AlertU' : title,
+        description: (body == null || body.isEmpty)
+            ? 'You have a new AlertU update.'
+            : body,
+        timestamp: DateTime.now(),
+      ),
+    );
+  } catch (error) {
+    debugPrint('Background notification persistence failed: $error');
+  }
 }
 
 class NotificationService {

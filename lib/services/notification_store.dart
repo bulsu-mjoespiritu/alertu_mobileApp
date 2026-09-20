@@ -194,6 +194,19 @@ class NotificationStore {
     unawaited(_persist());
   }
 
+  /// Same as [addOrUpdate], but the returned Future only completes once the
+  /// write to disk has actually finished. Background isolates (the FCM
+  /// background message handler) can be torn down by the OS shortly after
+  /// the handler returns, so a fire-and-forget write there risks never
+  /// completing -- callers in that context should await this instead.
+  Future<void> addOrUpdateAndFlush(NotificationItem item) async {
+    final withoutExisting =
+        notifications.value.where((existing) => existing.id != item.id).toList();
+    _knownIds.add(item.id);
+    notifications.value = <NotificationItem>[item, ...withoutExisting];
+    await _persist();
+  }
+
   void remove(String id) {
     _knownIds.remove(id);
     notifications.value =

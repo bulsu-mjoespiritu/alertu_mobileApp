@@ -61,14 +61,17 @@ class _ProfilePassResetPageState extends ConsumerState<ProfilePassResetPage> {
     final text = _passwordController.text;
     final uppercaseCount = text.replaceAll(RegExp(r'[^A-Z]'), '').length;
     final specialCharCount = text.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
+    // Bug fix: rules changed from "exactly 15+ chars, exactly 1 uppercase,
+    // exactly 1 special char" to "8-15 chars, at least 1 of each".
+    final bool hasValidLength = text.length >= 8 && text.length <= 15;
 
-    if (text.length < 12) {
+    if (text.length < 8) {
       setState(() {
         _strengthText = "Weak";
         _strengthColor = Colors.red;
         _strengthProgress = 0.33;
       });
-    } else if (text.length >= 15 && uppercaseCount == 1 && specialCharCount == 1) {
+    } else if (hasValidLength && uppercaseCount >= 1 && specialCharCount >= 1) {
       setState(() {
         _strengthText = "Strong";
         _strengthColor = Colors.green;

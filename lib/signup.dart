@@ -60,14 +60,17 @@ class _SignUpState extends ConsumerState<SignUp> {
     final text = password.text;
     final uppercaseCount = text.replaceAll(RegExp(r'[^A-Z]'), '').length;
     final specialCharCount = text.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
+    // Bug fix: rules changed from "exactly 15+ chars, exactly 1 uppercase,
+    // exactly 1 special char" to "8-15 chars, at least 1 of each".
+    final bool hasValidLength = text.length >= 8 && text.length <= 15;
 
-    if (text.length < 12) {
+    if (text.length < 8) {
       setState(() {
         _strengthText = "Weak";
         _strengthColor = Colors.red;
         _strengthProgress = 0.33;
       });
-    } else if (text.length >= 15 && uppercaseCount == 1 && specialCharCount == 1) {
+    } else if (hasValidLength && uppercaseCount >= 1 && specialCharCount >= 1) {
       setState(() {
         _strengthText = "Strong";
         _strengthColor = Colors.green;
@@ -603,13 +606,18 @@ class _SignUpState extends ConsumerState<SignUp> {
                             ),
                             validator: (v) {
                               if (v == null || v.isEmpty) return 'Password cannot be empty';
-                              if (v.length < 15) return 'Password must be at least 15 characters total';
+                              // Bug fix: was min 15 chars with exactly-1
+                              // uppercase and exactly-1 special char. Now
+                              // 8-15 chars, at least 1 of each.
+                              if (v.length < 8 || v.length > 15) {
+                                return 'Password must be 8–15 characters';
+                              }
 
                               final uppercaseCount = v.replaceAll(RegExp(r'[^A-Z]'), '').length;
-                              if (uppercaseCount != 1) return 'Must contain exactly 1 uppercase letter';
+                              if (uppercaseCount < 1) return 'Must contain at least 1 uppercase letter';
 
                               final specialCharCount = v.replaceAll(RegExp(r'[a-zA-Z0-9\s]'), '').length;
-                              if (specialCharCount != 1) return 'Must contain exactly 1 special character';
+                              if (specialCharCount < 1) return 'Must contain at least 1 special character';
 
                               return null;
                             },

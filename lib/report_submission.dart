@@ -13,6 +13,8 @@ import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'confirmation_subpage.dart';
 import 'services/api_service.dart';
@@ -76,7 +78,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
   int _audioSeconds = 0;
 
   bool _isSubmitting = false;
-  String _submitStatusText = 'Submitting...';
 
   // Fallback only for map picker initial camera when location is still empty
   static const libre.LatLng _bulacanFallback =
@@ -109,124 +110,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
         .join();
   }
 
-  double _degreesToRadians(double degrees) => degrees * pi / 180;
-
-  double _calculateHaversineDistanceMeters(
-      double lat1,
-      double lon1,
-      double lat2,
-      double lon2,
-      ) {
-    if (lat1.isNaN || lon1.isNaN || lat2.isNaN || lon2.isNaN) {
-      return double.infinity;
-    }
-
-    const double earthRadiusMeters = 6371000;
-    final double radLat1 = _degreesToRadians(lat1);
-    final double radLat2 = _degreesToRadians(lat2);
-    final double deltaLat = _degreesToRadians(lat2 - lat1);
-    final double deltaLon = _degreesToRadians(lon2 - lon1);
-
-    final double a = sin(deltaLat / 2) * sin(deltaLat / 2) +
-        cos(radLat1) * cos(radLat2) * sin(deltaLon / 2) * sin(deltaLon / 2);
-    final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
-    return earthRadiusMeters * c;
-  }
-
-  Future<Map<String, dynamic>> _checkIsDuplicate(
-      double lat,
-      double lng,
-      String incidentType, {
-        double maxDistanceMeters = 500,
-      }) async {
-    try {
-      final apiResult = await ApiService.checkDuplicateReport(
-        latitude: lat,
-        longitude: lng,
-        incidentType: incidentType,
-      );
-
-      if (apiResult != null && apiResult.containsKey('isDuplicate')) {
-        return {
-          'isDuplicate': apiResult['isDuplicate'] == true,
-          'parentReportId':
-          apiResult['parentReportId'] ?? apiResult['parentId'],
-          'distance': apiResult['distance'],
-        };
-      }
-    } catch (apiErr) {
-      debugPrint(
-          '⚠️ ApiService duplicate check failed, using client fallback: $apiErr');
-    }
-
-    try {
-      final String targetType = incidentType.trim().toLowerCase();
-
-      final querySnapshot = await FirebaseFirestore.instance
-          .collection('reports')
-          .orderBy('submittedAt', descending: true)
-          .limit(50)
-          .get();
-
-      if (querySnapshot.docs.isEmpty) {
-        return {'isDuplicate': false, 'parentReportId': null};
-      }
-
-      for (final doc in querySnapshot.docs) {
-        final data = doc.data();
-        final String activeType =
-        (data['incidentType'] ?? data['hazard'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-
-        if (targetType.isNotEmpty &&
-            activeType.isNotEmpty &&
-            targetType != activeType) {
-          continue;
-        }
-
-        double activeLat = double.nan;
-        double activeLng = double.nan;
-
-        if (data['latitude'] != null && data['longitude'] != null) {
-          activeLat = (data['latitude'] as num).toDouble();
-          activeLng = (data['longitude'] as num).toDouble();
-        } else if (data['location'] is Map) {
-          final loc = data['location'] as Map;
-          if (loc['latitude'] != null && loc['longitude'] != null) {
-            activeLat = (loc['latitude'] as num).toDouble();
-            activeLng = (loc['longitude'] as num).toDouble();
-          }
-        }
-
-        if (activeLat.isNaN || activeLng.isNaN) continue;
-
-        final double distanceMeters = _calculateHaversineDistanceMeters(
-          lat,
-          lng,
-          activeLat,
-          activeLng,
-        );
-
-        if (distanceMeters <= maxDistanceMeters) {
-          final String parentId =
-          (data['reportId'] ?? data['reportID'] ?? data['id'] ?? doc.id)
-              .toString();
-          return {
-            'isDuplicate': true,
-            'parentReportId': parentId,
-            'distance': distanceMeters,
-          };
-        }
-      }
-
-      return {'isDuplicate': false, 'parentReportId': null};
-    } catch (err) {
-      debugPrint('⚠️ Client duplicate fallback error: $err');
-      return {'isDuplicate': false, 'parentReportId': null};
-    }
-  }
 
   Future<Map<String, String>> _fetchReporterDetails() async {
     final userProfile = ref.read(userProfileProvider);
@@ -410,9 +293,16 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
     if (_isSubmitting) return;
     FocusScope.of(context).unfocus();
 
-    final libre.LatLng initial = _hasLocation
-        ? libre.LatLng(_currentLatitude!, _currentLongitude!)
-        : _bulacanFallback;
+    // Bug fix: a report created from the Quick Settings tile has no
+    // location yet (_hasLocation is false), so this used to always open
+    // the picker centered on the hardcoded _bulacanFallback point instead
+    // of where the user actually is. Try a quick GPS fix first; only fall
+    // back to Bulacan if permission is denied or the device can't get a
+    // fix in time.
+    final libre.LatLng initial =
+        _hasLocation ? libre.LatLng(_currentLatitude!, _currentLongitude!) : await _resolveDeviceLocationOrFallback();
+
+    if (!mounted) return;
 
     await Navigator.push(
       context,
@@ -434,6 +324,34 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
         ),
       ),
     );
+  }
+
+  /// Attempts a one-shot GPS fix (with permission handling) so "Add
+  /// Location" opens the map picker centered on the user's real position
+  /// instead of the static Bulacan fallback. Any failure -- permission
+  /// denied, GPS disabled, no fix within the time limit -- silently falls
+  /// back to _bulacanFallback, matching the previous behavior exactly in
+  /// the worst case rather than blocking the user from picking a location
+  /// manually.
+  Future<libre.LatLng> _resolveDeviceLocationOrFallback() async {
+    try {
+      var status = await Permission.location.status;
+      if (status.isDenied) {
+        status = await Permission.location.request();
+      }
+      if (!status.isGranted) return _bulacanFallback;
+
+      if (!await Geolocator.isLocationServiceEnabled()) return _bulacanFallback;
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 4),
+      );
+      return libre.LatLng(position.latitude, position.longitude);
+    } catch (error) {
+      debugPrint('Could not resolve device location for map picker: $error');
+      return _bulacanFallback;
+    }
   }
 
   Future<void> _onRetakeMedia() async {
@@ -459,15 +377,18 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
     }
   }
 
+  // Bug fix: this used to write to a separate `duplicate_reports`
+  // collection with `status: 'duplicate'` when the app's own client-side
+  // check thought a report looked similar to an existing one. Duplicate
+  // detection is now entirely the backend/admin's responsibility -- every
+  // report submitted from the app always lands in the normal `reports`
+  // collection as a plain pending report.
   Future<void> _saveDirectlyToFirestore(
       String docId,
       Map<String, dynamic> payload,
-      bool isDuplicate,
       ) async {
     try {
-      final String targetCollection =
-      isDuplicate ? 'duplicate_reports' : 'reports';
-      await FirebaseFirestore.instance.collection(targetCollection).doc(docId).set({
+      await FirebaseFirestore.instance.collection('reports').doc(docId).set({
         ...payload,
         'id': docId,
         'reportId': docId,
@@ -496,9 +417,12 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       await _stopAudioRecording();
     }
 
+    // Bug fix: this used to cycle the button's own label through several
+    // status strings ("Uploading media...", "Checking duplicates &
+    // sending...", etc). Kept as a plain disabled-button + spinner instead
+    // -- see the button widget below, which now just shows "Submitting...".
     setState(() {
       _isSubmitting = true;
-      _submitStatusText = 'Uploading media files...';
     });
 
     try {
@@ -508,7 +432,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       if (_localMediaPath != null && _localMediaPath!.isNotEmpty) {
         final file = File(_localMediaPath!);
         if (file.existsSync()) {
-          setState(() => _submitStatusText = 'Uploading media to cloud...');
           cloudMediaUrl = await ApiService.uploadMediaToB2(_localMediaPath!);
         }
       }
@@ -516,12 +439,9 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       if (_localAudioPath != null && _localAudioPath!.isNotEmpty) {
         final audioFile = File(_localAudioPath!);
         if (audioFile.existsSync()) {
-          setState(() => _submitStatusText = 'Uploading voice note...');
           cloudAudioUrl = await ApiService.uploadMediaToB2(_localAudioPath!);
         }
       }
-
-      setState(() => _submitStatusText = 'Checking duplicates & sending...');
 
       final firebaseUser = FirebaseAuth.instance.currentUser;
       final token = await firebaseUser?.getIdToken();
@@ -541,16 +461,12 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       final double lat = _currentLatitude!;
       final double lon = _currentLongitude!;
 
-      final duplicateResult = await _checkIsDuplicate(
-        lat,
-        lon,
-        resolvedIncidentType,
-        maxDistanceMeters: 500,
-      );
-
-      final bool isDuplicate = duplicateResult['isDuplicate'] == true;
-      final String? parentReportId = duplicateResult['parentReportId'];
-
+      // Bug fix: duplicate detection used to run on-device (a Firestore
+      // scan of the last 50 reports plus a haversine distance check) and
+      // could route a report into a separate `duplicate_reports`
+      // collection with `status: 'duplicate'`. That's now entirely the
+      // backend/admin's job -- every report the app submits is a plain
+      // pending report.
       final Map<String, dynamic> reportPayload = {
         'citizenID':
         reporterDetails['citizenID'] ?? firebaseUser?.uid ?? 'CID00000000',
@@ -578,9 +494,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
           'longitude': lon,
           'address': _currentAddress,
         },
-        'status': isDuplicate ? 'duplicate' : 'pending',
-        'isDuplicate': isDuplicate,
-        'parentReportId': parentReportId,
+        'status': 'pending',
       };
 
       if (ApiService.baseUrl == null) {
@@ -588,8 +502,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       }
 
       String returnedReportId = _generateRandomId(10);
-      bool serverIsDuplicate = isDuplicate;
-      String? serverParentId = parentReportId;
 
       try {
         final response = await http
@@ -609,9 +521,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
               responseData['reportId'] ??
               responseData['id'] ??
               returnedReportId;
-          serverIsDuplicate =
-              responseData['isDuplicate'] == true || isDuplicate;
-          serverParentId = responseData['parentReportId'] ?? parentReportId;
         }
       } catch (httpErr) {
         debugPrint(
@@ -621,7 +530,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
       await _saveDirectlyToFirestore(
         returnedReportId,
         reportPayload,
-        serverIsDuplicate,
       );
 
       if (mounted) {
@@ -632,8 +540,6 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
           'reportId': returnedReportId,
           'timestamp':
           DateFormat('yyyy-MM-dd HH:mm:ss').format(_selectedDateTime),
-          'isDuplicate': serverIsDuplicate,
-          'parentReportId': serverParentId,
         };
 
         Navigator.pushReplacement(
@@ -694,6 +600,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
     return PopScope(
       canPop: !_isSubmitting,
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         backgroundColor: surfaceBg,
         appBar: AppBar(
           backgroundColor: cardBg,
@@ -1273,7 +1180,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
                               : const Icon(LucideIcons.send, size: 16),
                           label: Text(
                             _isSubmitting
-                                ? _submitStatusText
+                                ? 'Submitting...'
                                 : 'Submit Report',
                             style: const TextStyle(
                               fontWeight: FontWeight.w600,

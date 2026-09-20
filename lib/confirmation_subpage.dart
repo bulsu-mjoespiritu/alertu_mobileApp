@@ -121,9 +121,7 @@ class _ConfirmationSubpageState extends State<ConfirmationSubpage> {
                           ),
                           const SizedBox(height: 16),
                           Text(
-                            widget.reportDetails['isDuplicate'] == true
-                                ? 'Duplicate Report Logged'
-                                : 'Report Submitted Successfully',
+                            'Report Submitted Successfully',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 18,
@@ -135,9 +133,11 @@ class _ConfirmationSubpageState extends State<ConfirmationSubpage> {
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 12.0),
                             child: Text(
-                              widget.reportDetails['isDuplicate'] == true
-                                  ? 'An active incident matching this location was already reported. Your submission has been linked to assist emergency responders.'
-                                  : 'Your incident report has been sent to emergency responders. Thank you for helping keep the community safe.',
+                              // Bug fix: duplicate detection/messaging used
+                              // to happen client-side. It's now entirely
+                              // the backend/admin's job, so this always
+                              // shows the plain success message.
+                              'Your incident report has been sent to emergency responders. Thank you for helping keep the community safe.',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 color: textMuted,

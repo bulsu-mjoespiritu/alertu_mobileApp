@@ -15,6 +15,7 @@ import 'package:forui/forui.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:flex_color_scheme/flex_color_scheme.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 /// 🛡️ Custom HttpOverrides class to handle SSL Certificate verification
 /// for Railway endpoints and Backblaze B2 storage on devices/emulators missing root CAs.
@@ -93,6 +94,14 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         surfaceMode: FlexSurfaceMode.highScaffoldLowSurface,
         blendLevel: 7,
+        // Bug fix / consistency: most screens hardcode
+        // GoogleFonts.montserrat(...) ad-hoc, but the app's own theme had
+        // no font family set, so anything using Theme.of(context).textTheme
+        // (or that just didn't bother setting a font) fell back to the
+        // platform default -- producing a visibly mixed-font app. Setting
+        // it once here makes Montserrat the default for every Text widget
+        // that doesn't override it, without having to touch each screen.
+        fontFamily: GoogleFonts.montserrat().fontFamily,
         subThemesData: const FlexSubThemesData(
           blendOnLevel: 10,
           blendOnColors: false,
@@ -107,6 +116,7 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         surfaceMode: FlexSurfaceMode.highScaffoldLowSurface,
         blendLevel: 13,
+        fontFamily: GoogleFonts.montserrat().fontFamily,
         subThemesData: const FlexSubThemesData(
           blendOnLevel: 20,
           useTextTheme: true,
@@ -127,9 +137,20 @@ class MyApp extends StatelessWidget {
             data: isDark
                 ? FTheme.neutral.dark.touch
                 : FTheme.neutral.light.touch,
-            child: MediaQuery(
-              data: MediaQuery.of(context)
-                  .copyWith(viewInsets: EdgeInsets.zero),
+            // Bug fix: this used to force `viewInsets: EdgeInsets.zero` on
+            // every screen in the app, which told Flutter the keyboard was
+            // always closed -- so no Scaffold/ScrollView anywhere could
+            // ever make room for it, regardless of how that screen was
+            // built. Removed so the real (open/closed) keyboard inset
+            // reaches every screen again.
+            //
+            // Global tap-outside-to-dismiss handler: tapping anywhere that
+            // isn't itself a tappable widget (a button, a field, etc. --
+            // those still win the gesture arena and work normally) closes
+            // the keyboard, on every screen, without per-screen wiring.
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
               child: child!,
             ),
           );

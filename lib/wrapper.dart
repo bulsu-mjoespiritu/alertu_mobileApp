@@ -13,6 +13,8 @@ import 'package:alertu_flutter/terms_conditions.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:alertu_flutter/services/notification_service.dart';
 import 'package:alertu_flutter/services/notification_store.dart';
+import 'package:alertu_flutter/app_navigator.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:alertu_flutter/disable_modal.dart';
 
 class Wrapper extends ConsumerStatefulWidget {
@@ -127,6 +129,40 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
       }
     } catch (e) {
       debugPrint("Socket.IO leave_room error: $e");
+    }
+  }
+
+  /// Called when a signed-in Firebase Auth session no longer has a
+  /// matching citizens/{uid} Firestore document and isn't a brand new
+  /// sign-up in progress -- i.e. the account was deleted elsewhere while
+  /// this device still had a valid session. Clears everything local to
+  /// this device rather than leaving the stale session around: the
+  /// Firebase Auth session itself, Google's cached account (so it isn't
+  /// silently reused to reconstruct the same profile on the next Google
+  /// sign-in), and the in-memory notification view.
+  Future<void> _forceSignOutDeletedAccount() async {
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (e) {
+      debugPrint("Error signing out deleted account: $e");
+    }
+    try {
+      await GoogleSignIn.instance.signOut();
+    } catch (_) {
+      // No-op: the user may not have signed in with Google at all.
+    }
+    notificationStore.clearInMemoryOnly();
+
+    final messengerContext = navigatorKey.currentContext;
+    if (messengerContext != null) {
+      ScaffoldMessenger.of(messengerContext).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This account could not be found. Please sign up again or contact support.',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
     }
   }
 
@@ -270,6 +306,35 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
 
               final data = profileSnapshot.data;
               final docExists = data != null;
+
+              // Bug fix: distinguishes "this account's Firestore profile
+              // was deleted" (Auth session still valid, but citizens/{uid}
+              // is gone) from "this is a brand new sign-up whose citizen
+              // doc hasn't finished writing yet" -- signup.dart creates the
+              // Firebase Auth account first and the Firestore doc a moment
+              // later, so a doc-missing snapshot can legitimately appear
+              // for a few seconds during normal signup. Auth's own
+              // creationTime lets us tell the two apart without any extra
+              // Firestore field: an account whose Auth record is more than
+              // a couple of minutes old and still has no doc wasn't just
+              // created, so it was very likely deleted out from under an
+              // existing session -- previously this fell through to Rule 4
+              // and quietly sent them to CompleteProfile, which prefills
+              // from the still-cached Gmail/Auth name & email and lets a
+              // brand new citizen doc be rebuilt as if nothing happened.
+              final DateTime? createdAt = currentUser.metadata.creationTime;
+              final bool looksFreshlyCreated = createdAt != null &&
+                  DateTime.now().difference(createdAt) < const Duration(minutes: 2);
+
+              if (!docExists && !looksFreshlyCreated) {
+                if (_isOnHomepage) {
+                  _leaveCurrentSocketRooms();
+                  _isOnHomepage = false;
+                  _updatePresence(isActive: false);
+                }
+                unawaited(_forceSignOutDeletedAccount());
+                return const Login();
+              }
 
               // Email/password users must verify before any profile routing.
               // The OTP flow persists this state in Firestore; Firebase's native
