@@ -99,17 +99,21 @@ class NearbyReportsNotifService {
       ) async {
     try {
       final int roundedDistance = math.max(0, distance.round());
+      // Names the actual incident and how close it is, and carries the
+      // report id so tapping the notification opens that incident's live
+      // details rather than being a dead end.
       final String body =
-          'Caution: You are within approximately $roundedDistance meters of '
-          '${report.title}. Please stay alert and stay safe.';
+          '${report.title} \u2022 about $roundedDistance m away. '
+          'Tap to view the incident details.';
 
       unawaited(ClickSoundRingtoneService.playClickSound());
 
       await NotificationService.instance.showLocalNotification(
         id: _notificationId(report.id),
-        title: 'AlertU Nearby Incident',
+        title: 'Nearby Incident Zone',
         body: body,
         payload: report.id,
+        reportId: report.id,
       );
 
       debugPrint(

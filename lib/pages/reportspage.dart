@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
 import 'package:video_player/video_player.dart';
 import 'package:alertu_flutter/services/api_service.dart';
+import 'package:alertu_flutter/services/my_reports_store.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -44,11 +45,24 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    // The Reports tab stays mounted inside Homepage's IndexedStack, so it
+    // never re-runs initState after a report is submitted. Listening to the
+    // local submission ledger is what makes a brand-new report show up in
+    // "My Reports" (and pull the fresh server lists for "Active Reports")
+    // the moment the submit succeeds, instead of only after a manual
+    // pull-to-refresh or an app restart.
+    myReportsStore.submissions.addListener(_handleSubmissionRecorded);
+    _loadData();
+  }
+
+  void _handleSubmissionRecorded() {
+    if (!mounted) return;
     _loadData();
   }
 
   @override
   void dispose() {
+    myReportsStore.submissions.removeListener(_handleSubmissionRecorded);
     _tabController.dispose();
     for (var controller in _activeVideoControllers.values) {
       controller.dispose();
@@ -161,13 +175,27 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     }
   }
 
-  /// Fetches every report the signed-in citizen has personally submitted,
-  /// regardless of status (pending/verified/resolved/rejected) -- this is
-  /// what makes "My Reports" different from "Active Reports" (globally
-  /// approved/active only) and "Reports History" (globally resolved only).
-  /// Queried directly against Firestore by `authUid`, the same field
-  /// report_submission.dart writes on every submitted report, rather than
-  /// a backend query param whose exact name/support isn't confirmed.
+  /// Builds the "My Reports" list: every report this citizen has personally
+  /// submitted, at every status, kept forever.
+  ///
+  /// Bug fix: this used to be a single Firestore query on the `reports`
+  /// collection filtered by `authUid`. That made the tab lossy -- the
+  /// backend moves a report OUT of `reports` when it is verified (into
+  /// `approved_reports`) and again when it is closed (into
+  /// `ResolvedReports`), so a citizen's own report silently vanished from
+  /// "My Reports" the moment it became active, and again when it was
+  /// resolved. It also showed nothing until the round trip finished, so a
+  /// just-submitted report didn't appear at all.
+  ///
+  /// The list is now the union of:
+  ///   * the device-local submission ledger (see MyReportsStore), which is
+  ///     written the instant a submit succeeds and never expires, and
+  ///   * live queries across all three collections, so status, admin notes
+  ///     and verification times stay current.
+  ///
+  /// Entries collapse by report id, the most advanced status wins, and the
+  /// only thing that ever takes a report out of this list is the citizen
+  /// tapping its own "x" -- which hides it here and nowhere else.
   Future<void> _fetchMyReports() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null || uid.isEmpty) {
@@ -176,21 +204,68 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     }
 
     try {
-      final querySnapshot = await FirebaseFirestore.instance
-          .collection('reports')
-          .where('authUid', isEqualTo: uid)
-          .get();
+      // Make sure this account's local ledger (submissions + the ids the
+      // citizen has cleared with the "x") is in memory before merging.
+      await myReportsStore.loadForUser(uid);
 
-      final List<dynamic> fetchedList = querySnapshot.docs.map((doc) {
-        final data = Map<String, dynamic>.from(doc.data());
-        data['id'] ??= doc.id;
-        data['reportId'] ??= doc.id;
-        return data;
-      }).toList();
+      // Keyed by normalised report id so the same report arriving from
+      // more than one collection collapses into a single card.
+      final Map<String, Map<String, dynamic>> merged = {};
+
+      void absorb(Map<String, dynamic> report, String status, int rank) {
+        final id = MyReportsStore.idOf(report);
+        if (id == null) return;
+
+        final existing = merged[id];
+        final existingRank = existing?[r'$statusRank'] as int? ?? -1;
+        if (existing != null && existingRank >= rank) {
+          // Keep the more advanced record, but let it inherit any fields
+          // the earlier/less advanced copy had and this one is missing
+          // (e.g. the original media URL or notes).
+          report.forEach((key, value) {
+            existing.putIfAbsent(key, () => value);
+          });
+          return;
+        }
+
+        final combined = <String, dynamic>{
+          if (existing != null) ...existing,
+          ...report,
+          'id': id,
+          'reportId': id,
+          'reportID': id,
+          'myReportStatus': status,
+          r'$statusRank': rank,
+        };
+        merged[id] = combined;
+      }
+
+      // Local snapshots first (rank 0): these guarantee a just-submitted
+      // report appears immediately, and that a report the backend has since
+      // moved between collections never disappears from this tab.
+      for (final local in myReportsStore.submissions.value) {
+        absorb(Map<String, dynamic>.from(local), 'Pending', 0);
+      }
+
+      // Then the server, newest status wins. Each collection is queried
+      // independently and failures are tolerated -- a project may not have
+      // every collection, or may not index authUid on all of them.
+      await Future.wait<void>([
+        _absorbCollection('reports', uid, absorb, 'Pending', 1),
+        _absorbCollection('approved_reports', uid, absorb, 'Active', 2),
+        _absorbCollection('ResolvedReports', uid, absorb, 'Resolved', 3),
+      ]);
+
+      // Reports the citizen cleared with the "x" are filtered out of MY
+      // list only. They are untouched on the server and still show in the
+      // global "Report History" tab.
+      final List<dynamic> fetchedList = merged.values
+          .where((report) => !myReportsStore.isHidden(MyReportsStore.idOf(report)))
+          .toList();
 
       fetchedList.sort((a, b) {
-        DateTime timeA = _parseDateTime(a['submittedAt'] ?? a['createdAt'] ?? a['timestamp']);
-        DateTime timeB = _parseDateTime(b['submittedAt'] ?? b['createdAt'] ?? b['timestamp']);
+        DateTime timeA = _parseDateTime(_myReportTimestamp(a));
+        DateTime timeB = _parseDateTime(_myReportTimestamp(b));
         return timeB.compareTo(timeA);
       });
 
@@ -198,12 +273,147 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       setState(() {
         _myReports = fetchedList;
       });
-      debugPrint("✅ My Reports synced: ${_myReports.length} items.");
+      debugPrint("\u2705 My Reports synced: ${_myReports.length} items.");
     } catch (e) {
-      debugPrint("❌ My Reports Sync Error: $e");
+      debugPrint("\u274c My Reports Sync Error: $e");
     } finally {
       if (mounted) setState(() => _isLoadingMyReports = false);
     }
+  }
+
+  /// Queries one collection for documents belonging to [uid] and feeds them
+  /// into the merge function. `authUid` is what report_submission.dart
+  /// writes; `citizenID` is checked as a fallback for records copied by the
+  /// backend without carrying the auth uid across.
+  Future<void> _absorbCollection(
+      String collection,
+      String uid,
+      void Function(Map<String, dynamic> report, String status, int rank) absorb,
+      String status,
+      int rank,
+      ) async {
+    Future<void> runQuery(String field, dynamic value) async {
+      final snapshot = await FirebaseFirestore.instance
+          .collection(collection)
+          .where(field, isEqualTo: value)
+          .get();
+
+      for (final doc in snapshot.docs) {
+        final data = Map<String, dynamic>.from(doc.data());
+        data['id'] ??= doc.id;
+        data['reportId'] ??= doc.id;
+        absorb(data, status, rank);
+      }
+    }
+
+    try {
+      await runQuery('authUid', uid);
+    } catch (e) {
+      debugPrint("\u26a0\ufe0f My Reports: $collection/authUid query skipped: $e");
+    }
+
+    // Only worth a second round trip if the local ledger knows a citizenID
+    // for this account -- otherwise there is nothing to match on.
+    final String? citizenId = myReportsStore.submissions.value
+        .map((report) => report['citizenID']?.toString())
+        .firstWhere((value) => value != null && value.isNotEmpty,
+        orElse: () => null);
+    if (citizenId == null) return;
+
+    try {
+      await runQuery('citizenID', citizenId);
+    } catch (e) {
+      debugPrint("\u26a0\ufe0f My Reports: $collection/citizenID query skipped: $e");
+    }
+  }
+
+  /// Best available "when did this happen" value for one of the citizen's
+  /// own reports, whichever collection it came back from.
+  dynamic _myReportTimestamp(dynamic report) {
+    if (report is! Map) return null;
+    return report['submittedAt'] ??
+        report['createdAt'] ??
+        report['verifiedAt'] ??
+        report['resolvedAt'] ??
+        report['timestamp'];
+  }
+
+  /// Confirms before the small "x" removes a report from this citizen's
+  /// own list, so a stray tap on a small target isn't destructive.
+  Future<void> _confirmClearMyReport(dynamic report) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          'Remove from My Reports?',
+          style: _textStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'This only clears it from your own list. The report itself is not '
+              'deleted and will still appear in Report History.',
+          style: _textStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text('Cancel', style: _textStyle(fontSize: 13)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE53935),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(
+              'Remove',
+              style: _textStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _clearMyReport(report);
+    }
+  }
+
+  /// Removes one report from the "My Reports" list only (the small "x").
+  /// The report stays on the server and keeps appearing in "Report
+  /// History" -- this is a personal-list tidy-up, not a deletion.
+  Future<void> _clearMyReport(dynamic report) async {
+    final String? id = MyReportsStore.idOf(report);
+    if (id == null) return;
+
+    await myReportsStore.hide(id);
+    if (!mounted) return;
+
+    setState(() {
+      _myReports = _myReports
+          .where((item) => MyReportsStore.idOf(item) != id)
+          .toList();
+    });
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        duration: const Duration(seconds: 4),
+        content: Text(
+          "Removed from My Reports. It's still in Report History.",
+          style: _textStyle(fontSize: 12),
+        ),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () async {
+            await myReportsStore.unhide(id);
+            await _fetchMyReports();
+          },
+        ),
+      ),
+    );
   }
 
   DateTime _parseDateTime(dynamic rawTimestamp) {
@@ -611,6 +821,14 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final int totalCount = filteredReports.length + _resolvedCount;
 
     return Scaffold(
+      // Keyboard fix: the only text field on this page is the "Search
+      // incidents..." box, and this Scaffold is nested inside Homepage's
+      // already height-constrained page container. Letting it resize for the
+      // keyboard squashed the whole list and fought with the outer layout
+      // while the keyboard animated -- the stutter the user sees. A search
+      // field at the top of a scrollable list never needs the layout to move
+      // for it; real text boxes elsewhere keep their normal avoidance.
+      resizeToAvoidBottomInset: false,
       backgroundColor: scaffoldBg,
       body: RefreshIndicator(
         onRefresh: _loadData,
@@ -787,6 +1005,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 isDark,
                 theme,
                 emptyStateText: "You haven't submitted any reports yet.",
+                isMyReports: true,
               ))
             else if (_selectedTabIndex == 1)
               (_isLoading
@@ -826,6 +1045,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       bool isDark,
       ThemeData theme, {
         String emptyStateText = "No active incidents reported.",
+        bool isMyReports = false,
       }) {
     if (reports.isEmpty) {
       return SliverToBoxAdapter(
@@ -843,7 +1063,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     final Map<String, List<dynamic>> grouped = {};
     for (var report in reports) {
-      final header = _getDateGroupHeader(report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
+      final header = _getDateGroupHeader(
+        isMyReports
+            ? _myReportTimestamp(report)
+            : (report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']),
+      );
       grouped.putIfAbsent(header, () => []).add(report);
     }
 
@@ -879,7 +1103,12 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         sliverChildren.add(
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: _buildIncidentCard(report, isDark, theme),
+            child: _buildIncidentCard(
+              report,
+              isDark,
+              theme,
+              isMyReport: isMyReports,
+            ),
           ),
         );
       }
@@ -975,15 +1204,36 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     );
   }
 
-  Widget _buildIncidentCard(dynamic report, bool isDark, ThemeData theme) {
+  Widget _buildIncidentCard(
+      dynamic report,
+      bool isDark,
+      ThemeData theme, {
+        bool isMyReport = false,
+      }) {
     final String title = (report['reportTitle'] ?? report['incidentType'] ?? 'INCIDENT').toString().toUpperCase();
     final String description = report['adminNotes'] ?? report['location']?['address'] ?? report['address'] ?? 'Verified emergency incident zone.';
     final String hazardType = (report['incidentType'] ?? 'General Emergency').toString();
     final String severity = (report['severity'] ?? 'LOW').toUpperCase();
     final String typeLower = hazardType.toLowerCase();
 
-    final dynamic rawTime = report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp'];
+    final dynamic rawTime = isMyReport
+        ? _myReportTimestamp(report)
+        : (report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
     final String formattedTime = _formatDateTime(rawTime);
+
+    // Status of one of MY reports: Pending -> Active -> Resolved. The tab
+    // deliberately keeps every one of these, so the card has to say which
+    // it is.
+    final String myStatus =
+    (report['myReportStatus'] ?? report['status'] ?? 'Pending').toString();
+    final String myStatusLabel = myStatus.toUpperCase() == 'RESOLVED'
+        ? 'RESOLVED'
+        : (myStatus.toUpperCase() == 'PENDING' ? 'PENDING' : 'ACTIVE');
+    final Color myStatusColor = myStatusLabel == 'RESOLVED'
+        ? const Color(0xFF2563EB)
+        : (myStatusLabel == 'ACTIVE'
+        ? const Color(0xFF059669)
+        : const Color(0xFF64748B));
 
     // Hazard Color and Icon configurations
     Color incidentThemeColor = const Color(0xFFF97316);
@@ -1051,15 +1301,58 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 Positioned(
                   top: 10,
                   left: 10,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(color: sevColor, borderRadius: BorderRadius.circular(6)),
-                    child: Text(
-                      "$severity SEVERITY",
-                      style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(color: sevColor, borderRadius: BorderRadius.circular(6)),
+                        child: Text(
+                          "$severity SEVERITY",
+                          style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
+                        ),
+                      ),
+                      // "My Reports" keeps a report through every status, so
+                      // each card states where it currently stands.
+                      if (isMyReport) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: myStatusColor,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            myStatusLabel,
+                            style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
+
+                // Per-report "clear" control -- My Reports only. Removes
+                // this one entry from the citizen's personal list; the
+                // report itself is untouched and still appears under
+                // "Report History".
+                if (isMyReport)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Material(
+                      color: Colors.black.withOpacity(0.45),
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => _confirmClearMyReport(report),
+                        child: const Padding(
+                          padding: EdgeInsets.all(5.0),
+                          child: Icon(Icons.close_rounded, size: 15, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

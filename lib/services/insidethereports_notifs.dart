@@ -128,6 +128,7 @@ class InsideReportsNotifService {
         title: 'DANGER: Inside Incident Area',
         body: body,
         payload: report.id,
+        reportId: report.id,
       );
 
       debugPrint(

@@ -426,7 +426,10 @@ class _CompleteProfileState extends ConsumerState<CompleteProfile> {
                     horizontalPadding,
                     12.0,
                     horizontalPadding,
-                    12.0 + MediaQuery.of(context).viewInsets.bottom + 24.0,
+                    // Double keyboard inset removed -- the Scaffold's own
+                    // resizeToAvoidBottomInset already makes room, and
+                    // adding it again here caused the jittery over-scroll.
+                    12.0 + 24.0,
                   ),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 400),

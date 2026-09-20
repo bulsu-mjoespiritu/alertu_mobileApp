@@ -13,6 +13,7 @@ import 'package:alertu_flutter/terms_conditions.dart';
 import 'package:alertu_flutter/services/api_service.dart';
 import 'package:alertu_flutter/services/notification_service.dart';
 import 'package:alertu_flutter/services/notification_store.dart';
+import 'package:alertu_flutter/services/my_reports_store.dart';
 import 'package:alertu_flutter/app_navigator.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:alertu_flutter/disable_modal.dart';
@@ -152,6 +153,7 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
       // No-op: the user may not have signed in with Google at all.
     }
     notificationStore.clearInMemoryOnly();
+    myReportsStore.clearInMemoryOnly();
 
     final messengerContext = navigatorKey.currentContext;
     if (messengerContext != null) {
@@ -231,8 +233,13 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
             // notifications are never deleted by this; only an explicit
             // "Clear All"/"X" does that (see NotificationStore.clear).
             notificationStore.clearInMemoryOnly();
+            // Same lifecycle for the citizen's own "My Reports" ledger:
+            // scoped per account, kept across restarts, and only ever
+            // trimmed by the user's own per-item "x".
+            myReportsStore.clearInMemoryOnly();
             if (user != null) {
               unawaited(notificationStore.loadForUser(user.uid));
+              unawaited(myReportsStore.loadForUser(user.uid));
             }
           }
 

@@ -744,7 +744,9 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
                     20,
                     20,
                     20,
-                    20 + MediaQuery.of(context).viewInsets.bottom + 24,
+                    // Double keyboard inset removed (see signup.dart) --
+                    // the Scaffold already resizes for the keyboard.
+                    20 + 24,
                   ),
                   child: Column(
                     children: [

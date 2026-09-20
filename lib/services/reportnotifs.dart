@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
 import 'clicksoundringtone.dart';
+import 'my_reports_store.dart';
 import 'notification_service.dart';
 
 /// Watches `approved_reports` and displays a local notification when a new
@@ -132,17 +133,25 @@ class ReportNotifService {
       ) ??
           documentId;
 
-      const details =
-          'A new incident has been reported. Please stay alert and stay safe.';
+      // The notification used to be a generic, contentless line ("A new
+      // incident has been reported. Please stay alert and stay safe.")
+      // that told the reader nothing about WHICH incident, WHERE, or how
+      // serious -- and tapping it went nowhere. It now carries a short
+      // summary of the actual report, and the report's id + a snapshot of
+      // its data travel with it so the Notifications page can open the
+      // same live details screen the Reports page opens.
+      final String details = _buildIncidentSummary(report);
 
       // Play click ringtone concurrently with showing notification
       unawaited(ClickSoundRingtoneService.playClickSound());
 
       await NotificationService.instance.showLocalNotification(
         id: _notificationId(documentId),
-        title: 'AlertU',
+        title: 'New Incident Reported',
         body: details,
         payload: reportId,
+        reportId: reportId,
+        reportData: MyReportsStore.sanitize(report),
       );
 
       debugPrint(
@@ -152,6 +161,37 @@ class ReportNotifService {
       debugPrint('❌ Failed to notify for approved report $documentId: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
+  }
+
+  /// Builds the one-line preview shown in the notification: what kind of
+  /// incident it is, how severe, and where -- e.g.
+  /// "Flood - HIGH severity - Brgy. Poblacion, Bulacan".
+  String _buildIncidentSummary(Map<String, dynamic> report) {
+    final String type = _readString(report, const <String>[
+      'reportTitle',
+      'incidentType',
+      'title',
+      'category',
+      'hazard',
+    ]) ??
+        'Incident';
+
+    final String? severity = _readString(report, const <String>[
+      'severity',
+      'hazardLevel',
+      'severityLevel',
+    ]);
+
+    final String? location = _readLocation(report);
+
+    final parts = <String>[
+      type,
+      if (severity != null && severity.isNotEmpty)
+        '${severity.toUpperCase()} severity',
+      if (location != null && location.isNotEmpty) location,
+    ];
+
+    return parts.join(' \u2022 ');
   }
 
   String? _readString(

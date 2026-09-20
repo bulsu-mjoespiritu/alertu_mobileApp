@@ -285,7 +285,9 @@ class _ForgotState extends ConsumerState<Forgot> {
                 isTablet ? 32.0 : 20.0,
                 24.0,
                 isTablet ? 32.0 : 20.0,
-                24.0 + MediaQuery.of(context).viewInsets.bottom,
+                // Double keyboard inset removed (see signup.dart) -- the
+                // Scaffold already resizes for the keyboard.
+                24.0,
               ),
               child: ConstrainedBox(
                 constraints: BoxConstraints(

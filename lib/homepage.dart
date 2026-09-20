@@ -862,7 +862,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
               alignment: Alignment.topCenter,
               child: Container(
                 margin: EdgeInsets.only(
-                  top: MediaQuery.of(context).padding.top + (isCompact ? 60 : 76),
+                  top: MediaQuery.paddingOf(context).top + (isCompact ? 60 : 76),
                   left: isCompact ? 12 : 16,
                   right: isCompact ? 12 : 16,
                 ),
@@ -1828,11 +1828,37 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    final double bottomPadding = MediaQuery.of(context).padding.bottom;
+    // Keyboard smoothness: this used to be `MediaQuery.of(context)`, which
+    // subscribes this widget to EVERY MediaQuery change -- including
+    // viewInsets. The keyboard animates its height frame by frame, so each
+    // of those frames rebuilt this entire build method: the MapLibreMap
+    // widget, the tab IndexedStack, the SOS/call buttons and the nav bar,
+    // 60 times a second, purely to re-read a value that hadn't changed.
+    // That is the stutter.
+    //
+    // `MediaQuery.paddingOf` subscribes to the padding aspect only, so
+    // opening the keyboard no longer rebuilds this screen at all and the
+    // keyboard animation runs clean.
+    final double bottomPadding = MediaQuery.paddingOf(context).bottom;
 
     return ResponsiveLayoutBuilder(
       builder: (context, screenType, isCompact) {
         return Scaffold(
+          // Keyboard fix: the Home screen is a full-bleed Stack containing a
+          // MapLibre map, the floating search bar and the nav bar. With the
+          // default `resizeToAvoidBottomInset: true`, opening the keyboard for
+          // the MAP SEARCH BAR forced a relayout of that entire stack (map
+          // surface included) on every frame of the keyboard animation --
+          // which is what made the whole screen jump, stutter and lag, and
+          // dragged the nav bar around. The search bar is an overlay anchored
+          // to the TOP of the screen, so it never needs the layout to move out
+          // of the keyboard's way in the first place.
+          //
+          // Real text boxes (report submission, profile, sign-up, chat, the
+          // filter sheet, etc.) live on their own pushed routes / bottom
+          // sheets with their own Scaffolds, so they keep their normal, smooth
+          // keyboard avoidance -- this only disables it for this map screen.
+          resizeToAvoidBottomInset: false,
           backgroundColor: const Color(0xFFF8FAFC),
           body: Stack(
             children: [
@@ -1895,20 +1921,34 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
               // Keep every tab mounted so NotificationsPage does not lose its
               // socket listener or in-memory notification items when Home is shown.
+              //
+              // Keyboard fix: `removeViewInsets(removeBottom: true)` zeroes the
+              // keyboard inset for everything inside the tab pages. Setting
+              // `resizeToAvoidBottomInset: false` on this Scaffold stops THIS
+              // Scaffold from resizing, but the raw inset still flowed down to
+              // the tab pages, where a nested Scaffold (Reports) or any widget
+              // reading viewInsets could reintroduce keyboard padding and push
+              // the layout -- and with it the nav bar -- around. Cutting it
+              // off here means a search bar in any tab can never move the
+              // chrome, no matter how that tab is built.
               Positioned.fill(
                 bottom: 70 + bottomPadding,
-                child: Offstage(
+                child: MediaQuery.removeViewInsets(
+                  context: context,
+                  removeBottom: true,
+                  child: Offstage(
                   offstage: _currentIndex == kNavPageHome,
                   child: Container(
                     color: const Color(0xFFF8FAFC),
                     child: IndexedStack(index: _currentIndex, children: _pages),
+                  ),
                   ),
                 ),
               ),
 
               if (_currentIndex == kNavPageHome)
                 Positioned(
-                  top: MediaQuery.of(context).padding.top + (isCompact ? 10 : 16),
+                  top: MediaQuery.paddingOf(context).top + (isCompact ? 10 : 16),
                   left: isCompact ? 12 : 16,
                   right: isCompact ? 12 : 16,
                   child: SlideDownAnimation(
@@ -2070,15 +2110,32 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                 curve: Curves.easeInOutCubic,
                 left: 0,
                 right: 0,
-                bottom: (_isInfoCardVisible || _isInsideHazardCardVisible)
+                // Bug fix: this used to slide the nav bar off-screen whenever
+                // an incident card was "visible", regardless of which tab was
+                // showing. Those cards only ever render on the Home/map tab,
+                // so on Reports / Alerts / Settings the bar was being dragged
+                // down for a card that wasn't on screen -- opening a gap at
+                // the bottom that let the map behind the page container show
+                // through. The offset is now scoped to the map screen, so the
+                // warning (and the bar tucking away for it) only happens
+                // there.
+                bottom: (_currentIndex == kNavPageHome &&
+                    (_isInfoCardVisible || _isInsideHazardCardVisible))
                     ? -100
                     : 0,
-                child: SwitchToNavbar(
+                // The nav bar is pinned to the bottom of the screen and must
+                // never ride up with the keyboard, so the keyboard inset is
+                // stripped from its subtree too.
+                child: MediaQuery.removeViewInsets(
+                  context: context,
+                  removeBottom: true,
+                  child: SwitchToNavbar(
                   child: CustomNavigationBar(
                     currentIndex: _currentIndex,
                     onTap: _onItemTapped,
                     onReportPressed: _handleReportIncident,
                     isReportLoading: _isLoadingLocation,
+                  ),
                   ),
                 ),
               ),

@@ -234,6 +234,10 @@ class NotificationService {
     required String title,
     required String body,
     String? payload,
+    // Link back to the incident this alert is about, so the Notifications
+    // page can open its live details when the card is tapped.
+    String? reportId,
+    Map<String, dynamic>? reportData,
   }) async {
     if (!await areNotificationsEnabled()) {
       debugPrint('🔕 Local notification suppressed because notifications are disabled.');
@@ -255,6 +259,8 @@ class NotificationService {
         title: title,
         description: body,
         timestamp: DateTime.now(),
+        reportId: reportId ?? payload,
+        reportData: reportData,
       ),
     );
 

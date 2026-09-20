@@ -22,6 +22,20 @@ class NotificationItem {
   final bool isAlert;
   final bool isRead;
 
+  /// Id of the incident report this notification is about, when there is
+  /// one. Notifications used to be flat text ("A new incident has been
+  /// reported. Please stay alert and stay safe.") with no way back to the
+  /// thing they were about. Carrying the report id means tapping the
+  /// notification can open the same live details screen the Reports page's
+  /// "View Live Details" button opens.
+  final String? reportId;
+
+  /// Optional snapshot of the report itself, captured at the moment the
+  /// notification was raised. When present the details screen opens
+  /// instantly and works offline; when absent the page falls back to
+  /// fetching by [reportId].
+  final Map<String, dynamic>? reportData;
+
   NotificationItem({
     required this.id,
     required this.title,
@@ -31,7 +45,14 @@ class NotificationItem {
     this.isSuccess = false,
     this.isAlert = false,
     this.isRead = false,
+    this.reportId,
+    this.reportData,
   });
+
+  /// True when this notification can open an incident details screen.
+  bool get hasReportDetails =>
+      (reportId != null && reportId!.trim().isNotEmpty) ||
+      (reportData != null && reportData!.isNotEmpty);
 
   NotificationItem copyWith({
     String? id,
@@ -42,6 +63,8 @@ class NotificationItem {
     bool? isSuccess,
     bool? isAlert,
     bool? isRead,
+    String? reportId,
+    Map<String, dynamic>? reportData,
   }) {
     return NotificationItem(
       id: id ?? this.id,
@@ -52,6 +75,8 @@ class NotificationItem {
       isSuccess: isSuccess ?? this.isSuccess,
       isAlert: isAlert ?? this.isAlert,
       isRead: isRead ?? this.isRead,
+      reportId: reportId ?? this.reportId,
+      reportData: reportData ?? this.reportData,
     );
   }
 
@@ -64,9 +89,12 @@ class NotificationItem {
         'isSuccess': isSuccess,
         'isAlert': isAlert,
         'isRead': isRead,
+        if (reportId != null) 'reportId': reportId,
+        if (reportData != null) 'reportData': reportData,
       };
 
   factory NotificationItem.fromJson(Map<String, dynamic> json) {
+    final rawReportData = json['reportData'];
     return NotificationItem(
       id: json['id'] as String,
       title: json['title'] as String? ?? '',
@@ -77,6 +105,10 @@ class NotificationItem {
       isSuccess: json['isSuccess'] as bool? ?? false,
       isAlert: json['isAlert'] as bool? ?? false,
       isRead: json['isRead'] as bool? ?? false,
+      reportId: json['reportId'] as String?,
+      reportData: rawReportData is Map
+          ? Map<String, dynamic>.from(rawReportData)
+          : null,
     );
   }
 }

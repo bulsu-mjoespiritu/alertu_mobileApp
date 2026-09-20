@@ -9,6 +9,8 @@ import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import '../services/socket.dart';
 import '../services/notification_store.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../subpages/livedetails_reports.dart';
 
 // NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
 // that NotificationService (FCM) and this page share one model and one
@@ -42,11 +44,20 @@ class _NotificationsPageState extends State<NotificationsPage> {
   // Single shared event listener reference
   void Function(dynamic)? _socketEventListener;
 
-  // A timer is created only after a transient notification becomes visible/read.
-  final Map<String, Timer> _expiryTimers = {};
-  final Set<String> _expiringNotificationIds = {};
-  static const Duration _readExpiryDuration = Duration(seconds: 30);
-  static const Duration _swipeOutDuration = Duration(milliseconds: 420);
+  // Bug fix: notifications used to delete themselves. Any "transient"
+  // notification (approval / rejection / nearby alert) that had been seen
+  // started a 30-second timer and then slid itself off the list, and a
+  // stray swipe could drop one too. A safety alert quietly vanishing while
+  // the user is still reading it is the opposite of what an emergency app
+  // should do, so the timers and the swipe-to-dismiss gesture are gone.
+  //
+  // A notification now leaves the list in exactly two ways, both explicit:
+  //   * the "Clear All" button in the header, or
+  //   * the small "x" on the notification itself.
+  //
+  // Report id currently being opened, used to show a spinner on that one
+  // card while its details are fetched.
+  String? _openingNotificationId;
 
   @override
   void initState() {
@@ -93,34 +104,40 @@ class _NotificationsPageState extends State<NotificationsPage> {
       }).toList();
     });
 
+    // Marking as read is purely cosmetic now -- it no longer starts a
+    // countdown to deletion.
     for (final id in ids) {
-      _scheduleExpiry(id);
+      notificationStore.update(id, (current) => current.copyWith(isRead: true));
     }
   }
 
-  void _scheduleExpiry(String notificationId) {
-    _expiryTimers[notificationId]?.cancel();
-    _expiryTimers[notificationId] = Timer(_readExpiryDuration, () {
-      _expireNotification(notificationId);
-    });
-  }
-
-  Future<void> _expireNotification(String notificationId) async {
-    if (!mounted || !_notifications.any((item) => item.id == notificationId)) {
-      _expiryTimers.remove(notificationId);
-      return;
-    }
-
-    _expiryTimers.remove(notificationId);
-    setState(() => _expiringNotificationIds.add(notificationId));
-
-    await Future.delayed(_swipeOutDuration);
-    if (!mounted) return;
-
+  /// Inserts or updates a notification in both the page's list and the
+  /// shared store, keyed by id.
+  ///
+  /// Socket-driven notifications used to live only in this page's state,
+  /// so they were lost on restart and could be silently replaced. Routing
+  /// them through the store means they persist like every other
+  /// notification and survive until the user clears them.
+  void _upsertNotification(NotificationItem item) {
     setState(() {
-      _notifications.removeWhere((item) => item.id == notificationId);
-      _expiringNotificationIds.remove(notificationId);
+      final index =
+      _notifications.indexWhere((existing) => existing.id == item.id);
+      if (index == -1) {
+        _notifications.insert(0, item);
+      } else {
+        _notifications[index] = item;
+      }
     });
+    notificationStore.addOrUpdate(item);
+  }
+
+  /// Replaces the currently-open "Report Under Review" card with its
+  /// outcome, in place, instead of deleting it and inserting a new one.
+  /// Keeping the same entry means nothing ever disappears from the list on
+  /// its own -- the card just changes what it says.
+  NotificationItem? _findProcessingNotification() {
+    final index = _notifications.indexWhere((item) => item.isProcessing);
+    return index == -1 ? null : _notifications[index];
   }
 
   Future<void> _initializeRealtimeNotifications() async {
@@ -301,11 +318,25 @@ class _NotificationsPageState extends State<NotificationsPage> {
           status == 'CANCELLED';
 
       if (isCloseAction) {
-        setState(() {
-          _notifications.removeWhere((item) => item.isProcessing);
-        });
+        // Previously this DELETED the "Report Under Review" card outright.
+        // Notifications are no longer removed by anything except the user's
+        // own "Clear All" / "x", so the card stays and simply stops showing
+        // the in-progress spinner.
+        final processing = _findProcessingNotification();
+        if (processing != null) {
+          _upsertNotification(
+            processing.copyWith(
+              title: 'Report Review Paused',
+              description:
+              'Dispatch operators have stepped away from reviewing your '
+                  'report. You will be notified when the review resumes.',
+              isProcessing: false,
+              timestamp: now,
+            ),
+          );
+        }
         debugPrint(
-            '🗑️ [NotificationsPage] Verification modal closed. Active review notifications removed.');
+            'ℹ️ [NotificationsPage] Verification modal closed. Review card updated in place.');
         return;
       }
 
@@ -334,26 +365,26 @@ class _NotificationsPageState extends State<NotificationsPage> {
             : 'rejected_${target}_${now.microsecondsSinceEpoch}';
         final String reportLabel = target.isNotEmpty ? target : 'your incident';
 
-        setState(() {
-          _notifications.removeWhere((item) => item.isProcessing);
-          _notifications.removeWhere((item) =>
-          item.isAlert &&
-              item.description.contains(reportLabel) &&
-              now.difference(item.timestamp).inMinutes < 5);
-          _notifications.insert(
-            0,
-            NotificationItem(
-              id: uniqueId,
-              title: 'Report Rejected',
-              description:
-              'Your emergency report for $reportLabel was not approved and has been moved to the rejected archive.',
-              timestamp: now,
-              isProcessing: false,
-              isSuccess: false,
-              isAlert: true,
-            ),
-          );
-        });
+        // The under-review card for this report is TRANSFORMED into the
+        // outcome rather than deleted and replaced, so the list never
+        // loses an entry on its own. Reusing the same id also means a
+        // repeated rejection event updates the existing card instead of
+        // stacking a duplicate -- which is what the old
+        // "removeWhere(description.contains(...))" hack was working around.
+        final processing = _findProcessingNotification();
+        _upsertNotification(
+          NotificationItem(
+            id: processing?.id ?? 'rejected_$uniqueId',
+            title: 'Report Rejected',
+            description:
+            'Your emergency report for $reportLabel was not approved and has been moved to the rejected archive.',
+            timestamp: now,
+            isProcessing: false,
+            isSuccess: false,
+            isAlert: true,
+            reportId: reportId.isNotEmpty ? reportId : null,
+          ),
+        );
         if (widget.visibility?.value == true) {
           _markVisibleNotificationsAsRead();
         }
@@ -412,22 +443,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
             'Your incident report ${target.isNotEmpty ? "($target) " : ""}'
             'is being reviewed by dispatch operators.';
 
-        setState(() {
-          // Check if an under-review card is already present in list
-          final existingIndex =
-          _notifications.indexWhere((item) => item.isProcessing);
-
-          if (existingIndex != -1) {
-            // Update existing processing notification in-place instead of creating a second card
-            _notifications[existingIndex] =
-                _notifications[existingIndex].copyWith(
-                  description: newDescription,
-                  timestamp: now,
-                );
-          } else {
-            // Insert brand new card if none existed
-            _notifications.insert(
-              0,
+        // Update the existing under-review card if there is one, otherwise
+        // open a new one. Either way it goes through the shared store so it
+        // survives an app restart like every other notification.
+        final existing = _findProcessingNotification();
+        _upsertNotification(
+          (existing ??
               NotificationItem(
                 id: eventKey,
                 title: 'Report Under Review',
@@ -435,10 +456,15 @@ class _NotificationsPageState extends State<NotificationsPage> {
                 timestamp: now,
                 isProcessing: true,
                 isSuccess: false,
-              ),
-            );
-          }
-        });
+              ))
+              .copyWith(
+            title: 'Report Under Review',
+            description: newDescription,
+            timestamp: now,
+            isProcessing: true,
+            reportId: reportId.isNotEmpty ? reportId : null,
+          ),
+        );
         if (widget.visibility?.value == true) {
           _markVisibleNotificationsAsRead();
         }
@@ -461,31 +487,24 @@ class _NotificationsPageState extends State<NotificationsPage> {
         final String reportLabel =
         target.isNotEmpty ? target : 'your incident';
 
-        setState(() {
-          // 1. Remove active under-review card
-          _notifications.removeWhere((item) => item.isProcessing);
-
-          // 2. Prevent duplicate approval cards for the exact same report ID if already added
-          _notifications.removeWhere((item) =>
-          item.isSuccess &&
-              item.description.contains(reportLabel) &&
-              now.difference(item.timestamp).inMinutes < 5);
-
-          // 3. Insert single success notification card
-          _notifications.insert(
-            0,
-            NotificationItem(
-              id: uniqueId,
-              title: 'Report Approved & Dispatched',
-              description:
-              'Emergency responders have been dispatched for $reportLabel. Help is on the way!',
-              timestamp: now,
-              isProcessing: false,
-              isSuccess: true,
-              isAlert: false,
-            ),
-          );
-        });
+        // Same idea as the rejection branch: the existing under-review card
+        // becomes the approval card in place. Nothing is deleted, and
+        // keying on that card's id makes a duplicate approval event update
+        // it rather than add a second one.
+        final processing = _findProcessingNotification();
+        _upsertNotification(
+          NotificationItem(
+            id: processing?.id ?? 'approved_$uniqueId',
+            title: 'Report Approved & Dispatched',
+            description:
+            'Emergency responders have been dispatched for $reportLabel. Help is on the way!',
+            timestamp: now,
+            isProcessing: false,
+            isSuccess: true,
+            isAlert: false,
+            reportId: reportId.isNotEmpty ? reportId : null,
+          ),
+        );
         if (widget.visibility?.value == true) {
           _markVisibleNotificationsAsRead();
         }
@@ -543,11 +562,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
   void dispose() {
     widget.visibility?.removeListener(_handleVisibilityChanged);
     notificationStore.notifications.removeListener(_syncFromStore);
-    for (final timer in _expiryTimers.values) {
-      timer.cancel();
-    }
-    _expiryTimers.clear();
-    _expiringNotificationIds.clear();
     _cleanupSocketListeners();
     super.dispose();
   }
@@ -661,14 +675,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   void _clearAllNotifications() {
-    // Cancel every pending read-expiry timer so none of them fire a
-    // setState after the items they reference are already gone.
-    for (final timer in _expiryTimers.values) {
-      timer.cancel();
-    }
-    _expiryTimers.clear();
-    _expiringNotificationIds.clear();
-
+    // One of only two ways a notification ever leaves this list (the other
+    // being the per-item "x" below).
     setState(() {
       _notifications.clear();
     });
@@ -810,67 +818,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
                           ),
                         ),
                       ),
-                      ...items.asMap().entries.map((entry) =>
-                          _buildDismissibleCard(
-                              entry.value, entry.key, isDark)),
+                      ...items.map((item) =>
+                          _buildNotificationCard(item, isDark)),
                     ],
                   );
                 }),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDismissibleCard(NotificationItem item, int index, bool isDark) {
-    final bool isExpiring = _expiringNotificationIds.contains(item.id);
-
-    return AnimatedSize(
-      duration: _swipeOutDuration,
-      curve: Curves.easeOutCubic,
-      child: AnimatedSlide(
-        duration: _swipeOutDuration,
-        curve: Curves.easeInCubic,
-        offset: isExpiring ? const Offset(1.15, 0) : Offset.zero,
-        child: AnimatedOpacity(
-          duration: _swipeOutDuration,
-          curve: Curves.easeIn,
-          opacity: isExpiring ? 0.0 : 1.0,
-          child: Dismissible(
-            key: ValueKey(
-                '${item.id}_${index}_${item.timestamp.microsecondsSinceEpoch}'),
-            direction: DismissDirection.endToStart,
-            onDismissed: (_) => _deleteNotification(item),
-            background: Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.only(right: 16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEF4444),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              alignment: Alignment.centerRight,
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Icon(
-                    LucideIcons.trash2,
-                    color: Colors.white,
-                    size: 18,
-                  ),
-                  SizedBox(width: 6),
-                  Text(
-                    "Delete",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            child: _buildNotificationCard(item, isDark),
           ),
         ),
       ),
@@ -910,9 +863,24 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final Color timeTextColor =
     isDark ? Colors.grey.shade400 : const Color(0xFF94A3B8);
 
+    final bool canOpenDetails = item.hasReportDetails;
+    final bool isOpening = _openingNotificationId == item.id;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Container(
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          // Tapping a notification that is about a specific incident now
+          // opens that incident's live details -- the same screen the
+          // Reports page's "View Live Details" button opens. Notifications
+          // with no report behind them (generic app updates) stay inert.
+          onTap: canOpenDetails && !isOpening
+              ? () => _openReportDetails(item)
+              : null,
+          child: Container(
         decoration: BoxDecoration(
           color: cardBgColor,
           borderRadius: BorderRadius.circular(12),
@@ -958,11 +926,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      // Explicit per-item delete control. Swipe-to-dismiss
-                      // (Dismissible, above) already deletes a notification,
-                      // but not everyone discovers a swipe gesture -- this
-                      // gives the same _deleteNotification action a visible,
-                      // tappable target.
+                      // The per-item "x" -- one of the only two ways a
+                      // notification is ever removed (the other being
+                      // "Clear All"). Swipe-to-dismiss used to do this too
+                      // and has been taken out, because an accidental swipe
+                      // silently losing a safety alert is not acceptable in
+                      // an emergency app.
                       InkWell(
                         onTap: () => _deleteNotification(item),
                         borderRadius: BorderRadius.circular(20),
@@ -990,11 +959,130 @@ class _NotificationsPageState extends State<NotificationsPage> {
                       item.isSuccess ? FontWeight.w500 : FontWeight.normal,
                     ),
                   ),
+                  // Affordance so it's obvious the card leads somewhere.
+                  if (canOpenDetails) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        if (isOpening)
+                          SizedBox(
+                            width: 11,
+                            height: 11,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.6,
+                              valueColor:
+                              AlwaysStoppedAnimation<Color>(bodyTextColor),
+                            ),
+                          )
+                        else
+                          Icon(
+                            LucideIcons.arrowRight,
+                            size: 12,
+                            color: bodyTextColor,
+                          ),
+                        const SizedBox(width: 5),
+                        Text(
+                          isOpening ? 'Opening...' : 'View incident details',
+                          style: GoogleFonts.montserrat(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: bodyTextColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
           ],
         ),
+      ),
+        ),
+      ),
+    );
+  }
+
+  /// Opens the live details screen for the incident a notification is
+  /// about. Uses the snapshot captured when the alert was raised if there
+  /// is one; otherwise looks the report up by id across the collections it
+  /// could have moved into (pending -> approved -> resolved).
+  Future<void> _openReportDetails(NotificationItem item) async {
+    final Map<String, dynamic>? cached = item.reportData;
+    if (cached != null && cached.isNotEmpty) {
+      _pushDetails(Map<String, dynamic>.from(cached));
+      return;
+    }
+
+    final String? reportId = item.reportId?.trim();
+    if (reportId == null || reportId.isEmpty) return;
+
+    setState(() => _openingNotificationId = item.id);
+
+    Map<String, dynamic>? found;
+    const collections = <String>[
+      'approved_reports',
+      'reports',
+      'ResolvedReports',
+    ];
+
+    for (final collection in collections) {
+      if (found != null) break;
+      try {
+        final ref = FirebaseFirestore.instance.collection(collection);
+
+        // Direct document id first -- the common case.
+        final doc = await ref.doc(reportId).get();
+        if (doc.exists && doc.data() != null) {
+          found = Map<String, dynamic>.from(doc.data()!);
+          found['id'] ??= doc.id;
+          break;
+        }
+
+        // Then the report's own business id, which is not always the
+        // Firestore document id.
+        for (final field in const <String>['reportID', 'reportId', 'verifiedReportID']) {
+          final query =
+          await ref.where(field, isEqualTo: reportId).limit(1).get();
+          if (query.docs.isNotEmpty) {
+            found = Map<String, dynamic>.from(query.docs.first.data());
+            found['id'] ??= query.docs.first.id;
+            break;
+          }
+        }
+      } catch (error) {
+        debugPrint('Notification details lookup failed in $collection: $error');
+      }
+    }
+
+    if (!mounted) return;
+    setState(() => _openingNotificationId = null);
+
+    if (found == null) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          content: Text(
+            'This incident is no longer available.',
+            style: GoogleFonts.montserrat(fontSize: 12),
+          ),
+        ),
+      );
+      return;
+    }
+
+    _pushDetails(found);
+  }
+
+  void _pushDetails(Map<String, dynamic> reportData) {
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LiveDetailsReports(reportData: reportData),
       ),
     );
   }

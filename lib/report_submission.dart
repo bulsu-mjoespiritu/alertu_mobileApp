@@ -18,6 +18,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'confirmation_subpage.dart';
 import 'services/api_service.dart';
+import 'services/my_reports_store.dart';
 import 'choose_another.dart';
 import 'camera_page.dart';
 import 'package:alertu_flutter/user_provider.dart';
@@ -532,15 +533,28 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
         reportPayload,
       );
 
+      final Map<String, dynamic> confirmationPayload = {
+        ...reportPayload,
+        'id': returnedReportId,
+        'reportID': returnedReportId,
+        'reportId': returnedReportId,
+        'timestamp':
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(_selectedDateTime),
+        'submittedAt': DateTime.now().toIso8601String(),
+      };
+
+      // "My Reports" fix: record the submission in the citizen's own local
+      // ledger the moment it succeeds. Previously the tab was a single
+      // Firestore query against `reports` filtered by authUid, so a report
+      // disappeared from "My Reports" as soon as the backend moved it out
+      // of that collection (to `approved_reports` on verification, to
+      // `ResolvedReports` on closure). Recording it here means it shows up
+      // instantly and then stays in the list through every status change --
+      // pending, active and resolved alike -- until the citizen clears that
+      // one entry themselves with its "x".
+      unawaited(myReportsStore.recordSubmission(confirmationPayload));
+
       if (mounted) {
-        final Map<String, dynamic> confirmationPayload = {
-          ...reportPayload,
-          'id': returnedReportId,
-          'reportID': returnedReportId,
-          'reportId': returnedReportId,
-          'timestamp':
-          DateFormat('yyyy-MM-dd HH:mm:ss').format(_selectedDateTime),
-        };
 
         Navigator.pushReplacement(
           context,

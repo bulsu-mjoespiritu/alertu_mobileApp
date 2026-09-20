@@ -43,7 +43,21 @@ class _MapSearchBarState extends State<MapSearchBar>
   bool _hasSearchError = false;
 
   @override
+  void initState() {
+    super.initState();
+    // The focus ring below reads _focusNode.hasFocus, but nothing was
+    // listening, so the bar never actually repainted on focus/blur. This
+    // rebuilds the search bar alone -- not the map behind it.
+    _focusNode.addListener(_handleFocusChanged);
+  }
+
+  void _handleFocusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   void dispose() {
+    _focusNode.removeListener(_handleFocusChanged);
     _debounceTimer?.cancel();
     _addressController.dispose();
     _focusNode.dispose();

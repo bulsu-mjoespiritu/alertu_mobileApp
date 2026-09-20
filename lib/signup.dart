@@ -515,7 +515,14 @@ class _SignUpState extends ConsumerState<SignUp> {
                     horizontalPadding,
                     12.0,
                     horizontalPadding,
-                    12.0 + MediaQuery.of(context).viewInsets.bottom + 24.0,
+                    // Keyboard smoothness: this Scaffold already has
+                    // resizeToAvoidBottomInset: true, which shrinks the body
+                    // by the keyboard height. Adding viewInsets.bottom here
+                    // as well applied the SAME inset twice, so the form
+                    // over-scrolled and visibly jittered as the two
+                    // adjustments fought each other on every animation
+                    // frame. One adjustment is enough.
+                    12.0 + 24.0,
                   ),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 400),

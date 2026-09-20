@@ -142,6 +142,7 @@ class UserExitedReportNotifsService {
         title: 'NOTICE: Exited Incident Area',
         body: body,
         payload: report.id,
+        reportId: report.id,
       );
 
       debugPrint(
