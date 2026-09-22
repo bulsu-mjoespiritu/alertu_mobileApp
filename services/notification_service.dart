@@ -234,35 +234,35 @@ class NotificationService {
     required String title,
     required String body,
     String? payload,
-    // Link back to the incident this alert is about, so the Notifications
-    // page can open its live details when the card is tapped.
-    String? reportId,
-    Map<String, dynamic>? reportData,
   }) async {
-    if (!await areNotificationsEnabled()) {
-      debugPrint('🔕 Local notification suppressed because notifications are disabled.');
-      return;
-    }
-
-    // Bug 3/4 fix (revised): this is the single funnel every notification
-    // source in the app already calls before showing a system-tray banner
-    // -- FCM foreground messages, nearby-incident proximity alerts,
-    // inside/exited hazard-zone alerts, and approved-report alerts (see
+    // Bug fix: save-to-history now happens unconditionally, before the
+    // areNotificationsEnabled() check below. Previously that check could
+    // return early and skip the notificationStore.addOrUpdate call
+    // entirely -- so if the user's notification preference looked
+    // disabled (or DND suppressed the system banner further down), the
+    // notification never made it into the in-app Notifications list
+    // either, even though it was a real, permanent event that should be
+    // there regardless of whether a banner was shown.
+    //
+    // This is the single funnel every notification source in the app
+    // already calls before showing a system-tray banner -- FCM foreground
+    // messages, nearby-incident proximity alerts, inside/exited
+    // hazard-zone alerts, and approved-report alerts (see
     // nearbyreports_notifs.dart, insidethereports_notifs.dart,
-    // userexitedreport_notifs.dart, reportnotifs.dart). Saving here, once,
-    // instead of only in the FCM handler, means every one of those real
-    // alerts -- including the "AlertU Nearby Incident" case -- now reaches
-    // the Notifications page, not just FCM pushes.
+    // userexitedreport_notifs.dart, reportnotifs.dart).
     notificationStore.addOrUpdate(
       NotificationItem(
         id: 'local_$id',
         title: title,
         description: body,
         timestamp: DateTime.now(),
-        reportId: reportId ?? payload,
-        reportData: reportData,
       ),
     );
+
+    if (!await areNotificationsEnabled()) {
+      debugPrint('🔕 System banner suppressed (notifications disabled) -- still saved to history.');
+      return;
+    }
 
     final androidDetails = AndroidNotificationDetails(
       _emergencyChannel.id,

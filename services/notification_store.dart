@@ -22,20 +22,6 @@ class NotificationItem {
   final bool isAlert;
   final bool isRead;
 
-  /// Id of the incident report this notification is about, when there is
-  /// one. Notifications used to be flat text ("A new incident has been
-  /// reported. Please stay alert and stay safe.") with no way back to the
-  /// thing they were about. Carrying the report id means tapping the
-  /// notification can open the same live details screen the Reports page's
-  /// "View Live Details" button opens.
-  final String? reportId;
-
-  /// Optional snapshot of the report itself, captured at the moment the
-  /// notification was raised. When present the details screen opens
-  /// instantly and works offline; when absent the page falls back to
-  /// fetching by [reportId].
-  final Map<String, dynamic>? reportData;
-
   NotificationItem({
     required this.id,
     required this.title,
@@ -45,14 +31,7 @@ class NotificationItem {
     this.isSuccess = false,
     this.isAlert = false,
     this.isRead = false,
-    this.reportId,
-    this.reportData,
   });
-
-  /// True when this notification can open an incident details screen.
-  bool get hasReportDetails =>
-      (reportId != null && reportId!.trim().isNotEmpty) ||
-      (reportData != null && reportData!.isNotEmpty);
 
   NotificationItem copyWith({
     String? id,
@@ -63,8 +42,6 @@ class NotificationItem {
     bool? isSuccess,
     bool? isAlert,
     bool? isRead,
-    String? reportId,
-    Map<String, dynamic>? reportData,
   }) {
     return NotificationItem(
       id: id ?? this.id,
@@ -75,8 +52,6 @@ class NotificationItem {
       isSuccess: isSuccess ?? this.isSuccess,
       isAlert: isAlert ?? this.isAlert,
       isRead: isRead ?? this.isRead,
-      reportId: reportId ?? this.reportId,
-      reportData: reportData ?? this.reportData,
     );
   }
 
@@ -89,12 +64,9 @@ class NotificationItem {
         'isSuccess': isSuccess,
         'isAlert': isAlert,
         'isRead': isRead,
-        if (reportId != null) 'reportId': reportId,
-        if (reportData != null) 'reportData': reportData,
       };
 
   factory NotificationItem.fromJson(Map<String, dynamic> json) {
-    final rawReportData = json['reportData'];
     return NotificationItem(
       id: json['id'] as String,
       title: json['title'] as String? ?? '',
@@ -105,10 +77,6 @@ class NotificationItem {
       isSuccess: json['isSuccess'] as bool? ?? false,
       isAlert: json['isAlert'] as bool? ?? false,
       isRead: json['isRead'] as bool? ?? false,
-      reportId: json['reportId'] as String?,
-      reportData: rawReportData is Map
-          ? Map<String, dynamic>.from(rawReportData)
-          : null,
     );
   }
 }
@@ -122,14 +90,17 @@ class NotificationItem {
 ///
 /// Persistence: notifications are written to a small JSON file per signed
 /// -in account under the app's documents directory (using `path_provider`,
-/// already a dependency of this project -- no new package needed). This
-/// means notifications now survive the app being closed, force-stopped, or
-/// swiped from recent tasks, and are still there the next time the same
-/// account signs back in. They are only ever removed by an explicit user
-/// action ("Clear All" / the per-item "X") -- never by app lifecycle
-/// events. See [loadForUser] / [clearInMemoryOnly] for how account
-/// switches are handled without leaking one account's notifications into
-/// another's view on a shared device.
+/// already a dependency of this project -- no new package/Firestore usage
+/// needed). This means notifications survive the app being closed,
+/// force-stopped, or swiped from recent tasks, and are still there the
+/// next time the same account signs back in. They are only ever removed
+/// by an explicit user action ("Clear All" / the per-item "X") -- never by
+/// a timer or any app lifecycle event.
+///
+/// Scope note: local-only means this does NOT survive an app
+/// uninstall/reinstall or carry over to a new device -- that would need a
+/// server-side mirror (e.g. Firestore), which was deliberately left out to
+/// avoid extra Firestore read/write volume per notification.
 class NotificationStore {
   NotificationStore._();
 
@@ -141,13 +112,28 @@ class NotificationStore {
   final Set<String> _knownIds = <String>{};
 
   /// uid of the account the in-memory list currently belongs to. Null
-  /// means "no account context yet" (signed out, or not loaded yet) --
-  /// in that state nothing is persisted, since there's nowhere safe to
-  /// scope the file to.
+  /// means "no account context yet" (signed out, or [loadForUser] hasn't
+  /// finished yet).
   String? _uid;
 
+  /// Items added/updated while [_uid] was still null (e.g. a notification
+  /// arriving in the brief window before `loadForUser` completes on cold
+  /// start). Previously these were silently dropped -- shown for the
+  /// current session but never persisted, so they were gone on next
+  /// launch. Now they're queued here and flushed (persisted properly) as
+  /// soon as a uid is established.
+  final List<NotificationItem> _pendingBeforeUid = [];
+
+  List<NotificationItem> _sorted(List<NotificationItem> items) {
+    final sorted = List<NotificationItem>.from(items);
+    sorted.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return sorted;
+  }
+
   /// Loads [uid]'s previously-saved notifications from disk and makes them
-  /// the store's current contents, replacing whatever is in memory.
+  /// the store's current contents, replacing whatever is in memory. Any
+  /// notifications queued in [_pendingBeforeUid] (added before a uid was
+  /// known) are flushed right after.
   ///
   /// Call this once per signed-in user -- e.g. from `Wrapper` when
   /// FirebaseAuth's uid changes -- not on every rebuild, since it always
@@ -170,13 +156,21 @@ class NotificationStore {
         for (final item in items) {
           _knownIds.add(item.id);
         }
-        notifications.value = items;
+        notifications.value = _sorted(items);
       } else {
         notifications.value = <NotificationItem>[];
       }
     } catch (error) {
       debugPrint('NotificationStore: failed to load persisted notifications: $error');
       notifications.value = <NotificationItem>[];
+    }
+
+    if (_pendingBeforeUid.isNotEmpty) {
+      final queued = List<NotificationItem>.from(_pendingBeforeUid);
+      _pendingBeforeUid.clear();
+      for (final item in queued) {
+        addOrUpdate(item);
+      }
     }
   }
 
@@ -200,7 +194,14 @@ class NotificationStore {
   /// duplicates are ignored so the same FCM message can't be counted twice
   /// (e.g. once via `onMessage` and again via `getInitialMessage` /
   /// `onMessageOpenedApp`).
+  ///
+  /// If no uid is known yet (see [loadForUser]), the item is queued
+  /// instead of silently dropped, and persisted once a uid is set.
   void add(NotificationItem item) {
+    if (_uid == null) {
+      _pendingBeforeUid.add(item);
+      return;
+    }
     if (_knownIds.contains(item.id)) return;
     _knownIds.add(item.id);
 
@@ -218,7 +219,13 @@ class NotificationStore {
   /// report id. Repeated calls with identical content are a no-op beyond
   /// the reorder, so this also satisfies "notifications do not duplicate
   /// on repeated shows of the same id".
+  ///
+  /// If no uid is known yet, the item is queued the same way as [add].
   void addOrUpdate(NotificationItem item) {
+    if (_uid == null) {
+      _pendingBeforeUid.add(item);
+      return;
+    }
     final withoutExisting =
         notifications.value.where((existing) => existing.id != item.id).toList();
     _knownIds.add(item.id);
@@ -232,6 +239,10 @@ class NotificationStore {
   /// the handler returns, so a fire-and-forget write there risks never
   /// completing -- callers in that context should await this instead.
   Future<void> addOrUpdateAndFlush(NotificationItem item) async {
+    if (_uid == null) {
+      _pendingBeforeUid.add(item);
+      return;
+    }
     final withoutExisting =
         notifications.value.where((existing) => existing.id != item.id).toList();
     _knownIds.add(item.id);
@@ -240,6 +251,7 @@ class NotificationStore {
   }
 
   void remove(String id) {
+    _pendingBeforeUid.removeWhere((item) => item.id == id);
     _knownIds.remove(id);
     notifications.value =
         notifications.value.where((item) => item.id != id).toList();
@@ -262,6 +274,7 @@ class NotificationStore {
   /// never automatically.
   void clear() {
     _knownIds.clear();
+    _pendingBeforeUid.clear();
     notifications.value = <NotificationItem>[];
 
     final uid = _uid;
