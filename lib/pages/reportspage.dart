@@ -14,6 +14,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 // Import your subpages
 import '../subpages/reportshistory_page.dart';
 import '../subpages/livedetails_reports.dart';
+import '../subpages/livedetailshistory.dart';
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -275,17 +276,50 @@ class _ReportsPageState extends State<ReportsPage>
       // Local snapshots first (rank 0): these guarantee a just-submitted
       // report appears immediately, and that a report the backend has since
       // moved between collections never disappears from this tab.
+      //
+      // Bug fix: this used to hardcode every local snapshot's status as
+      // 'Pending', full stop -- so even after a rejection was recorded
+      // locally (see MyReportsStore.updateLocalStatus, called from
+      // notifspage.dart the moment a REPORT_REJECTED event arrives), this
+      // loop threw that information away and re-absorbed it as Pending
+      // anyway. It now reads whatever status was last recorded locally,
+      // falling back to Pending for a freshly-submitted report that
+      // hasn't heard anything back yet. Rank stays 0 either way -- a real
+      // server record (below) still wins once it's synced.
       for (final local in myReportsStore.submissions.value) {
-        absorb(Map<String, dynamic>.from(local), 'Pending', 0);
+        final localReport = Map<String, dynamic>.from(local);
+        final String localStatus =
+            (localReport['localStatus'] as String?)?.trim().isNotEmpty == true
+                ? (localReport['localStatus'] as String).trim()
+                : 'Pending';
+        absorb(localReport, localStatus, 0);
       }
 
-      // Then the server, newest status wins. Each collection is queried
-      // independently and failures are tolerated -- a project may not have
-      // every collection, or may not index authUid on all of them.
+      // Then the server, newest/most-advanced status wins. Each collection
+      // is queried independently and failures are tolerated -- a project
+      // may not have every collection, or may not index authUid on all of
+      // them.
+      //
+      // Bug fix ("rejected report still shows as pending"): a rejected
+      // report is removed from `reports` by the admin side and never
+      // lands in `approved_reports` or `ResolvedReports` either, so none
+      // of those queries ever overrode the rank-0 local snapshot recorded
+      // at submission time -- which was always 'Pending'. The card was
+      // stuck saying "PENDING" forever, even though the report had
+      // actually been rejected. Querying the rejected collection too
+      // (ranked alongside Resolved, since both are terminal outcomes)
+      // lets a real rejection override that stale snapshot. Two likely
+      // collection names are tried since this client doesn't otherwise
+      // read that collection anywhere -- only one needs to actually exist
+      // on the backend; adjust/add the name here if your admin panel
+      // writes rejections somewhere else (e.g. a `status: 'rejected'`
+      // flag still inside `reports` instead of a separate collection).
       await Future.wait<void>([
         _absorbCollection('reports', uid, absorb, 'Pending', 1),
         _absorbCollection('approved_reports', uid, absorb, 'Active', 2),
         _absorbCollection('ResolvedReports', uid, absorb, 'Resolved', 3),
+        _absorbCollection('rejected_reports', uid, absorb, 'Rejected', 4),
+        _absorbCollection('RejectedReports', uid, absorb, 'Rejected', 4),
       ]);
 
       // Reports the citizen cleared with the "x" are filtered out of MY
@@ -383,7 +417,7 @@ class _ReportsPageState extends State<ReportsPage>
         ),
         content: Text(
           'This only clears it from your own list. The report itself is not '
-              'deleted and will still appear in Report History.',
+              'deleted and will still appear in Unresolved/Resolved Reports.',
           style: _textStyle(fontSize: 13),
         ),
         actions: [
@@ -434,7 +468,7 @@ class _ReportsPageState extends State<ReportsPage>
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         duration: const Duration(seconds: 4),
         content: Text(
-          "Removed from My Reports. It's still in Report History.",
+          "Removed from My Reports. It's still tracked in Unresolved/Resolved Reports.",
           style: _textStyle(fontSize: 12),
         ),
         action: SnackBarAction(
@@ -971,8 +1005,8 @@ class _ReportsPageState extends State<ReportsPage>
                   child: Row(
                     children: [
                       _buildCustomTab("My Reports", 0, isDark),
-                      _buildCustomTab("Active Reports", 1, isDark),
-                      _buildCustomTab("Report History", 2, isDark),
+                      _buildCustomTab("Unresolved Reports", 1, isDark),
+                      _buildCustomTab("Resolved Reports", 2, isDark),
                     ],
                   ),
                 ),
@@ -1254,19 +1288,30 @@ class _ReportsPageState extends State<ReportsPage>
         : (report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
     final String formattedTime = _formatDateTime(rawTime);
 
-    // Status of one of MY reports: Pending -> Active -> Resolved. The tab
-    // deliberately keeps every one of these, so the card has to say which
-    // it is.
+    // Status of one of MY reports: Pending -> Active -> Resolved, or
+    // Pending -> Rejected. The tab deliberately keeps every one of these,
+    // so the card has to say which it is.
+    //
+    // Bug fix: this used to collapse anything that wasn't literally
+    // 'RESOLVED' or 'PENDING' into 'ACTIVE' -- so even after the merge
+    // above correctly tagged a report 'Rejected', the card still showed
+    // "ACTIVE". Rejected now gets its own explicit label instead of
+    // falling through to the ACTIVE branch.
     final String myStatus =
     (report['myReportStatus'] ?? report['status'] ?? 'Pending').toString();
-    final String myStatusLabel = myStatus.toUpperCase() == 'RESOLVED'
+    final String myStatusUpper = myStatus.toUpperCase();
+    final String myStatusLabel = myStatusUpper == 'RESOLVED'
         ? 'RESOLVED'
-        : (myStatus.toUpperCase() == 'PENDING' ? 'PENDING' : 'ACTIVE');
+        : (myStatusUpper == 'REJECTED'
+        ? 'REJECTED'
+        : (myStatusUpper == 'PENDING' ? 'PENDING' : 'ACTIVE'));
     final Color myStatusColor = myStatusLabel == 'RESOLVED'
         ? const Color(0xFF2563EB)
+        : (myStatusLabel == 'REJECTED'
+        ? const Color(0xFFDC2626)
         : (myStatusLabel == 'ACTIVE'
         ? const Color(0xFF059669)
-        : const Color(0xFF64748B));
+        : const Color(0xFF64748B)));
 
     // Hazard Color and Icon configurations
     Color incidentThemeColor = const Color(0xFFF97316);
@@ -1451,34 +1496,59 @@ class _ReportsPageState extends State<ReportsPage>
                 const SizedBox(height: 14),
 
                 // View Details Button
-                SizedBox(
-                  width: double.infinity,
-                  height: 40,
-                  child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => LiveDetailsReports(reportData: report)),
-                      );
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: buttonBg,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                //
+                // Bug fix / feature: a My Reports card whose status has
+                // already settled (Resolved or Rejected) used to still say
+                // "View Live Details" and open the *live* incident screen
+                // -- which is for a report that's still active/pending and
+                // being tracked in real time. A resolved or rejected
+                // report has nothing live left to show, so it now says
+                // "View Report Details" and opens the history-style
+                // details screen instead, matching the Resolved Reports
+                // tab's own cards.
+                Builder(builder: (context) {
+                  final bool isSettled = isMyReport &&
+                      (myStatusLabel == 'RESOLVED' || myStatusLabel == 'REJECTED');
+                  final String buttonLabel =
+                  isSettled ? "View Report Details" : "View Live Details";
+
+                  return SizedBox(
+                    width: double.infinity,
+                    height: 40,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => isSettled
+                                ? LiveDetailsHistory(
+                              reportData: report is Map<String, dynamic>
+                                  ? report
+                                  : Map<String, dynamic>.from(report),
+                            )
+                                : LiveDetailsReports(reportData: report),
+                          ),
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: buttonBg,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            buttonLabel,
+                            style: _textStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                          const SizedBox(width: 6),
+                          const Icon(Icons.arrow_forward_rounded, size: 14, color: Colors.white),
+                        ],
+                      ),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          "View Live Details",
-                          style: _textStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
-                        const SizedBox(width: 6),
-                        const Icon(Icons.arrow_forward_rounded, size: 14, color: Colors.white),
-                      ],
-                    ),
-                  ),
-                ),
+                  );
+                }),
               ],
             ),
           ),

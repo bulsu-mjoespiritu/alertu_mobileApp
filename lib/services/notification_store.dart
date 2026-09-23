@@ -141,13 +141,33 @@ class NotificationStore {
   final Set<String> _knownIds = <String>{};
 
   /// uid of the account the in-memory list currently belongs to. Null
-  /// means "no account context yet" (signed out, or not loaded yet) --
-  /// in that state nothing is persisted, since there's nowhere safe to
-  /// scope the file to.
+  /// means "no account context yet" (signed out, or [loadForUser] hasn't
+  /// finished yet).
   String? _uid;
 
+  /// Bug fix ("notifications sometimes don't save at all"): a notification
+  /// can legitimately arrive before [_uid] is known -- e.g. a push that
+  /// lands in the brief window on cold start before FirebaseAuth resolves
+  /// the current user, or before `Wrapper` has called [loadForUser]. That
+  /// used to mean [add]/[addOrUpdate] silently proceeded with `_uid ==
+  /// null`, which let the item show for the current session but `_persist`
+  /// no-ops without a uid to scope the file to -- so the very next
+  /// [loadForUser] call overwrote `notifications.value` from disk (or
+  /// empty) and the notification was gone for good. Queuing here instead
+  /// means nothing is dropped -- it's flushed (and actually persisted) the
+  /// moment a uid is established.
+  final List<NotificationItem> _pendingBeforeUid = [];
+
+  List<NotificationItem> _sorted(List<NotificationItem> items) {
+    final sorted = List<NotificationItem>.from(items);
+    sorted.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return sorted;
+  }
+
   /// Loads [uid]'s previously-saved notifications from disk and makes them
-  /// the store's current contents, replacing whatever is in memory.
+  /// the store's current contents, replacing whatever is in memory. Any
+  /// notifications queued in [_pendingBeforeUid] (added before a uid was
+  /// known) are flushed right after.
   ///
   /// Call this once per signed-in user -- e.g. from `Wrapper` when
   /// FirebaseAuth's uid changes -- not on every rebuild, since it always
@@ -170,13 +190,21 @@ class NotificationStore {
         for (final item in items) {
           _knownIds.add(item.id);
         }
-        notifications.value = items;
+        notifications.value = _sorted(items);
       } else {
         notifications.value = <NotificationItem>[];
       }
     } catch (error) {
       debugPrint('NotificationStore: failed to load persisted notifications: $error');
       notifications.value = <NotificationItem>[];
+    }
+
+    if (_pendingBeforeUid.isNotEmpty) {
+      final queued = List<NotificationItem>.from(_pendingBeforeUid);
+      _pendingBeforeUid.clear();
+      for (final item in queued) {
+        addOrUpdate(item);
+      }
     }
   }
 
@@ -194,13 +222,27 @@ class NotificationStore {
     notifications.value = <NotificationItem>[];
   }
 
+  /// True when a notification with [id] is already known -- either saved
+  /// in memory or waiting in [_pendingBeforeUid] for a uid. Lets callers
+  /// (e.g. the FCM handlers) skip redundant work for a duplicate delivery
+  /// even during the brief pre-uid window.
+  bool _isQueued(String id) =>
+      _pendingBeforeUid.any((item) => item.id == id);
+
   /// Adds a real notification to the shared list, newest first.
   ///
   /// Safe to call multiple times with the same [NotificationItem.id];
   /// duplicates are ignored so the same FCM message can't be counted twice
   /// (e.g. once via `onMessage` and again via `getInitialMessage` /
   /// `onMessageOpenedApp`).
+  ///
+  /// If no uid is known yet (see [loadForUser]), the item is queued
+  /// instead of silently dropped, and persisted once a uid is set.
   void add(NotificationItem item) {
+    if (_uid == null) {
+      if (!_isQueued(item.id)) _pendingBeforeUid.add(item);
+      return;
+    }
     if (_knownIds.contains(item.id)) return;
     _knownIds.add(item.id);
 
@@ -218,7 +260,14 @@ class NotificationStore {
   /// report id. Repeated calls with identical content are a no-op beyond
   /// the reorder, so this also satisfies "notifications do not duplicate
   /// on repeated shows of the same id".
+  ///
+  /// If no uid is known yet, the item is queued the same way as [add].
   void addOrUpdate(NotificationItem item) {
+    if (_uid == null) {
+      _pendingBeforeUid.removeWhere((existing) => existing.id == item.id);
+      _pendingBeforeUid.add(item);
+      return;
+    }
     final withoutExisting =
         notifications.value.where((existing) => existing.id != item.id).toList();
     _knownIds.add(item.id);
@@ -232,6 +281,11 @@ class NotificationStore {
   /// the handler returns, so a fire-and-forget write there risks never
   /// completing -- callers in that context should await this instead.
   Future<void> addOrUpdateAndFlush(NotificationItem item) async {
+    if (_uid == null) {
+      _pendingBeforeUid.removeWhere((existing) => existing.id == item.id);
+      _pendingBeforeUid.add(item);
+      return;
+    }
     final withoutExisting =
         notifications.value.where((existing) => existing.id != item.id).toList();
     _knownIds.add(item.id);
@@ -240,6 +294,7 @@ class NotificationStore {
   }
 
   void remove(String id) {
+    _pendingBeforeUid.removeWhere((item) => item.id == id);
     _knownIds.remove(id);
     notifications.value =
         notifications.value.where((item) => item.id != id).toList();
@@ -262,6 +317,7 @@ class NotificationStore {
   /// never automatically.
   void clear() {
     _knownIds.clear();
+    _pendingBeforeUid.clear();
     notifications.value = <NotificationItem>[];
 
     final uid = _uid;

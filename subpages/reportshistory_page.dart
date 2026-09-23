@@ -48,16 +48,26 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
   List<dynamic> _sortReportsNewestFirst(List<dynamic> reports) {
     List<dynamic> sorted = List.from(reports);
     sorted.sort((a, b) {
-      DateTime timeA = _parseDateTime(a['resolvedAt'] ?? a['verifiedAt'] ?? a['createdAt'] ?? a['timestamp']);
-      DateTime timeB = _parseDateTime(b['resolvedAt'] ?? b['verifiedAt'] ?? b['createdAt'] ?? b['timestamp']);
+      DateTime timeA = _parseDateTime(a['resolvedAt'] ?? a['rejectedAt'] ?? a['verifiedAt'] ?? a['createdAt'] ?? a['timestamp']);
+      DateTime timeB = _parseDateTime(b['resolvedAt'] ?? b['rejectedAt'] ?? b['verifiedAt'] ?? b['createdAt'] ?? b['timestamp']);
       return timeB.compareTo(timeA); // Newest top, oldest bottom
     });
     return sorted;
   }
 
-  /// Fetches resolved reports from API endpoint with Firestore fallback
+  /// Fetches resolved reports from API endpoint with Firestore fallback,
+  /// then merges in rejected reports too.
+  ///
+  /// Bug fix / feature: the Resolved Reports tab only ever showed reports
+  /// that were approved and later closed out -- a rejected report (never
+  /// approved at all) had nowhere to live, even though it's just as
+  /// "done" from the citizen's point of view. It's now merged in here,
+  /// tagged with its own REJECTED status so the card can badge it
+  /// distinctly instead of looking like a resolved incident.
   Future<void> _fetchResolvedReports() async {
     if (mounted) setState(() => _isLoading = true);
+
+    List<dynamic> resolvedList = [];
 
     try {
       if (ApiService.baseUrl == null) {
@@ -73,44 +83,68 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
 
       if (response.statusCode == 200) {
         final resData = json.decode(response.body);
-        List<dynamic> fetchedList = [];
-
         if (resData is Map && resData.containsKey('data')) {
-          fetchedList = resData['data'];
+          resolvedList = resData['data'];
         } else if (resData is List) {
-          fetchedList = resData;
+          resolvedList = resData;
         }
-
-        if (!mounted) return;
-        setState(() {
-          _resolvedReports = _sortReportsNewestFirst(fetchedList);
-          _isLoading = false;
-        });
-        return;
       }
     } catch (e) {
       debugPrint("⚠️ API Sync fallback triggered for history: $e");
     }
 
-    // Direct Firestore fallback
-    try {
-      final querySnapshot = await FirebaseFirestore.instance.collection('ResolvedReports').get();
-      List<dynamic> fetchedList = querySnapshot.docs.map((doc) {
-        Map<String, dynamic> data = doc.data();
-        data['id'] = doc.id;
-        return data;
-      }).toList();
-
-      if (mounted) {
-        setState(() {
-          _resolvedReports = _sortReportsNewestFirst(fetchedList);
-          _isLoading = false;
-        });
+    // Direct Firestore fallback for resolved reports, only if the API
+    // above didn't come back with anything.
+    if (resolvedList.isEmpty) {
+      try {
+        final querySnapshot = await FirebaseFirestore.instance.collection('ResolvedReports').get();
+        resolvedList = querySnapshot.docs.map((doc) {
+          Map<String, dynamic> data = doc.data();
+          data['id'] = doc.id;
+          data['status'] ??= 'RESOLVED';
+          return data;
+        }).toList();
+      } catch (e) {
+        debugPrint("❌ Error fetching resolved history: $e");
       }
-    } catch (e) {
-      debugPrint("❌ Error fetching resolved history: $e");
-      if (mounted) setState(() => _isLoading = false);
     }
+
+    // Rejected reports, merged in alongside resolved ones. Two likely
+    // collection names are tried since nothing else in this client reads
+    // this collection -- only one needs to actually exist on the backend.
+    final List<dynamic> rejectedList = await _fetchRejectedReports();
+
+    if (!mounted) return;
+    setState(() {
+      _resolvedReports = _sortReportsNewestFirst([...resolvedList, ...rejectedList]);
+      _isLoading = false;
+    });
+  }
+
+  /// Queries the rejected-reports collection(s) directly from Firestore.
+  /// Tolerant of either candidate collection not existing -- a project
+  /// only needs one of them to be real for this to work. Each doc is
+  /// tagged `status: 'REJECTED'` (unless it already carries its own
+  /// status) so the card renders a distinct badge from resolved reports.
+  Future<List<dynamic>> _fetchRejectedReports() async {
+    const candidateCollections = <String>['rejected_reports', 'RejectedReports'];
+    final List<dynamic> combined = [];
+
+    for (final collection in candidateCollections) {
+      try {
+        final querySnapshot = await FirebaseFirestore.instance.collection(collection).get();
+        for (final doc in querySnapshot.docs) {
+          final data = doc.data();
+          data['id'] ??= doc.id;
+          data['status'] ??= 'REJECTED';
+          combined.add(data);
+        }
+      } catch (e) {
+        debugPrint("⚠️ Rejected reports query skipped for $collection: $e");
+      }
+    }
+
+    return combined;
   }
 
   DateTime _parseDateTime(dynamic rawTimestamp) {
@@ -189,7 +223,7 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
       final String desc = (report['adminNotes'] ?? report['description'] ?? report['location']?['address'] ?? '').toString().toLowerCase();
       final String type = (report['incidentType'] ?? '').toString().toLowerCase();
       final String sev = (report['severity'] ?? '').toString().toLowerCase();
-      final DateTime reportDate = _parseDateTime(report['resolvedAt'] ?? report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
+      final DateTime reportDate = _parseDateTime(report['resolvedAt'] ?? report['rejectedAt'] ?? report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
 
       final query = widget.searchQuery.toLowerCase();
       final matchesSearch = title.contains(query) || desc.contains(query);
@@ -226,7 +260,7 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  "No resolved reports found",
+                  "No resolved or rejected reports found",
                   style: _textStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
@@ -254,7 +288,7 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
     final Map<String, List<dynamic>> grouped = {};
 
     for (var report in reports) {
-      final header = _getDateGroupHeader(report['resolvedAt'] ?? report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
+      final header = _getDateGroupHeader(report['resolvedAt'] ?? report['rejectedAt'] ?? report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
       grouped.putIfAbsent(header, () => []).add(report);
     }
 
@@ -317,7 +351,7 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
     final String status = (report['status'] ?? 'RESOLVED').toUpperCase();
     final String typeLower = hazardType.toLowerCase();
 
-    final dynamic rawTime = report['resolvedAt'] ?? report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp'];
+    final dynamic rawTime = report['resolvedAt'] ?? report['rejectedAt'] ?? report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp'];
     final String formattedTime = _formatDateTime(rawTime);
 
     // Hazard Color Scheme
@@ -344,8 +378,12 @@ class _ReportsHistoryPageState extends State<ReportsHistoryPage> {
     final cardDescColor = isDark ? Colors.grey.shade400 : const Color(0xFF64748B);
     final buttonBg = isDark ? theme.colorScheme.primary : const Color(0xFF2563EB);
 
-    final statusBgColor = isDark ? const Color(0xFF14532D).withOpacity(0.6) : const Color(0xFFDCFCE7);
-    final statusTextColor = isDark ? const Color(0xFF86EFAC) : const Color(0xFF166534);
+    final statusBgColor = status == 'REJECTED'
+        ? (isDark ? const Color(0xFF881337).withOpacity(0.6) : const Color(0xFFFEE2E2))
+        : (isDark ? const Color(0xFF14532D).withOpacity(0.6) : const Color(0xFFDCFCE7));
+    final statusTextColor = status == 'REJECTED'
+        ? (isDark ? const Color(0xFFFDA4AF) : const Color(0xFF9F1239))
+        : (isDark ? const Color(0xFF86EFAC) : const Color(0xFF166534));
 
     return Container(
       width: double.infinity,

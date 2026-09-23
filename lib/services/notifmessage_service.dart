@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'notification_service.dart';
+import 'notification_store.dart';
 
 class NotifMessageService {
 
@@ -63,6 +64,23 @@ class NotifMessageService {
     required String body,
     String? payload,
   }) async {
+    // Bug fix: chat messages never reached the shared NotificationStore at
+    // all, so they never showed up in the in-app Notifications list --
+    // and saving used to happen (nowhere) after the enabled-check below,
+    // so even fixing that naively would still have skipped history for
+    // anyone with notifications disabled. This is the same funnel every
+    // other notification source uses (see
+    // NotificationService.showLocalNotification), saved unconditionally
+    // before the check that only controls the system-tray banner.
+    notificationStore.addOrUpdate(
+      NotificationItem(
+        id: 'chat_$id',
+        title: title,
+        description: body,
+        timestamp: DateTime.now(),
+      ),
+    );
+
     final notificationsEnabled =
     await NotificationService.instance.areNotificationsEnabled();
     if (!notificationsEnabled) {
@@ -97,10 +115,12 @@ class NotifMessageService {
     );
 
     try {
+      // Bug fix: this used to always show the same generic placeholder
+      // text regardless of the actual title/body passed in.
       await _localNotifications.show(
         id: id,
-        title: 'AlertU',
-        body: 'New message from the emergency team.',
+        title: title,
+        body: body,
         notificationDetails: notificationDetails,
         payload: payload,
       );

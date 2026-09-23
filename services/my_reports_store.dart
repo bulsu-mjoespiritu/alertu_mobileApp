@@ -167,6 +167,34 @@ class MyReportsStore {
     }
   }
 
+  /// Updates the locally-recorded status of one submission, so "My
+  /// Reports" can reflect a status change (e.g. a rejection) the moment
+  /// it's known -- via a realtime notification/socket event -- instead of
+  /// only on the next full server sync. This is a *floor*, same as the
+  /// rest of this store: reportspage.dart's own live Firestore queries
+  /// still take precedence once they've synced, this just keeps the local
+  /// snapshot from lying about "Pending" in the meantime.
+  ///
+  /// No-op if [reportId] doesn't match any locally-recorded submission
+  /// (e.g. it refers to a report this device never submitted, or the
+  /// event's id doesn't line up with how it was recorded at submit time).
+  Future<void> updateLocalStatus(String reportId, String status) async {
+    final id = reportId.trim();
+    if (id.isEmpty) return;
+
+    bool changed = false;
+    final next = submissions.value.map((entry) {
+      if (idOf(entry) != id) return entry;
+      if (entry['localStatus'] == status) return entry;
+      changed = true;
+      return <String, dynamic>{...entry, 'localStatus': status};
+    }).toList();
+
+    if (!changed) return;
+    submissions.value = next;
+    await _persist();
+  }
+
   bool isHidden(String? reportId) =>
       reportId != null && _hiddenIds.contains(reportId.trim());
 

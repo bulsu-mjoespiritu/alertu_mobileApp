@@ -9,6 +9,7 @@ import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import '../services/socket.dart';
 import '../services/notification_store.dart';
+import '../services/my_reports_store.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../subpages/livedetails_reports.dart';
 
@@ -360,10 +361,23 @@ class _NotificationsPageState extends State<NotificationsPage> {
           status == 'REJECTED';
 
       if (isRejectedAction) {
-        final String uniqueId = rawEventId.isNotEmpty
-            ? rawEventId
-            : 'rejected_${target}_${now.microsecondsSinceEpoch}';
         final String reportLabel = target.isNotEmpty ? target : 'your incident';
+
+        // Bug fix ("rejected notifications sometimes duplicate"): this id
+        // used to fall back to a fresh timestamp (`now.microsecondsSinceEpoch`)
+        // whenever there was no in-progress "Report Under Review" card to
+        // reuse. The very first rejection event for a report turns that
+        // card from processing into rejected, so a *second* rejection
+        // event for the exact same report (re-emitted by the backend
+        // across CITIZEN_NOTIFICATION/ADMIN_ACTION_EVENT/etc., or simply
+        // retried) no longer finds a processing card and used to mint a
+        // brand-new timestamped id -- stacking a duplicate "Report
+        // Rejected" card instead of updating the first one. Keying on the
+        // report/target itself instead of the clock means every repeat of
+        // the same rejection always resolves to the same id.
+        final String uniqueId = target.isNotEmpty
+            ? target
+            : (rawEventId.isNotEmpty ? rawEventId : eventSignature);
 
         // The under-review card for this report is TRANSFORMED into the
         // outcome rather than deleted and replaced, so the list never
@@ -385,6 +399,24 @@ class _NotificationsPageState extends State<NotificationsPage> {
             reportId: reportId.isNotEmpty ? reportId : null,
           ),
         );
+
+        // Bug fix ("rejected report still shows as pending in My
+        // Reports"): the report status shown on the Reports page comes
+        // from a separate store (MyReportsStore) that this page doesn't
+        // otherwise touch, so a rejection used to update only this
+        // Notifications list -- My Reports kept saying "PENDING" until
+        // (if ever) a live Firestore query happened to pick up the
+        // rejection. Updating the local floor here means the status
+        // flips the moment the rejection is known, not on some later
+        // sync. Tries both the socket event's own reportId and its
+        // fallback target, since submissions can be keyed by either
+        // depending on what the backend echoes back.
+        if (reportId.isNotEmpty) {
+          unawaited(myReportsStore.updateLocalStatus(reportId, 'Rejected'));
+        }
+        if (target.isNotEmpty && target != reportId) {
+          unawaited(myReportsStore.updateLocalStatus(target, 'Rejected'));
+        }
         if (widget.visibility?.value == true) {
           _markVisibleNotificationsAsRead();
         }
@@ -482,8 +514,13 @@ class _NotificationsPageState extends State<NotificationsPage> {
         }
         _lastApprovalEventTime = now;
 
-        final String uniqueId =
-            '${now.microsecondsSinceEpoch}_${rawEventId.isNotEmpty ? rawEventId : 'evt'}';
+        // Same fix as the rejection branch above: key on the report/target
+        // itself rather than the clock, so a repeated approval event for a
+        // report whose "Report Under Review" card has already been
+        // resolved doesn't mint a second, duplicate approval card.
+        final String uniqueId = target.isNotEmpty
+            ? target
+            : (rawEventId.isNotEmpty ? rawEventId : eventSignature);
         final String reportLabel =
         target.isNotEmpty ? target : 'your incident';
 
@@ -505,6 +542,15 @@ class _NotificationsPageState extends State<NotificationsPage> {
             reportId: reportId.isNotEmpty ? reportId : null,
           ),
         );
+
+        // Same bonus fix as the rejection branch: keep My Reports' status
+        // in step with the outcome the moment it's known.
+        if (reportId.isNotEmpty) {
+          unawaited(myReportsStore.updateLocalStatus(reportId, 'Active'));
+        }
+        if (target.isNotEmpty && target != reportId) {
+          unawaited(myReportsStore.updateLocalStatus(target, 'Active'));
+        }
         if (widget.visibility?.value == true) {
           _markVisibleNotificationsAsRead();
         }

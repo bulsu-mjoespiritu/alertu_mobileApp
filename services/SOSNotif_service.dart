@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'notification_store.dart';
 
 class SOSNotifService {
 
@@ -62,6 +63,24 @@ class SOSNotifService {
     required String body,
     String? payload,
   }) async {
+    // Bug fix: SOS alerts never reached the shared NotificationStore, so
+    // they never showed up in the in-app Notifications list even though a
+    // system-tray banner appeared -- the single most safety-critical
+    // notification in the app was also the one that could "disappear" the
+    // moment the banner was dismissed. This is the same funnel every other
+    // notification source uses (see NotificationService.showLocalNotification)
+    // so the SOS alert is saved unconditionally, before anything that could
+    // fail or return early below.
+    notificationStore.addOrUpdate(
+      NotificationItem(
+        id: 'sos_$id',
+        title: title,
+        description: body,
+        timestamp: DateTime.now(),
+        isAlert: true,
+      ),
+    );
+
     if (!_isInitialized) {
       await initialize();
     }
@@ -89,10 +108,14 @@ class SOSNotifService {
     );
 
     try {
+      // Bug fix: this used to always show the same generic placeholder
+      // text regardless of the title/body the caller actually passed in,
+      // so every SOS banner (and now, every saved history entry above)
+      // looked identical no matter what actually happened.
       await _localNotifications.show(
         id: id,
-        title: 'AlertU',
-        body: 'SOS alert update received.',
+        title: title,
+        body: body,
         notificationDetails: notificationDetails,
         payload: payload,
       );
