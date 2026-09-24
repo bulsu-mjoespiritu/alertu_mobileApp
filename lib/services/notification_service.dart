@@ -32,10 +32,15 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       return;
     }
 
-    final String id = message.data['alertId'] ??
-        message.data['id'] ??
-        message.messageId ??
-        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}';
+    // Admin broadcast alerts share the 'admin_alert_<id>' id used by the
+    // Notifications page's Firestore/socket listeners, so the same alert
+    // arriving over several channels collapses into one card.
+    final String? alertId = message.data['alertId']?.toString();
+    final String id = (alertId != null && alertId.isNotEmpty)
+        ? 'admin_alert_$alertId'
+        : (message.data['id'] ??
+            message.messageId ??
+            'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
 
     final bool isAlert = message.data['isAdminAlert'] == 'true' ||
         message.data.containsKey('alertId') ||
@@ -50,6 +55,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
             : body,
         timestamp: DateTime.now(),
         isAlert: isAlert,
+        alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
       ),
     );
   } catch (error) {
@@ -206,7 +212,12 @@ class NotificationService {
           title: title,
           body: body,
           payload: message.data.toString(),
-          reportId: message.data['alertId'] ?? message.data['reportId'],
+          // An admin alert id is not a report id -- passing it as one made
+          // the card try (and fail) to open incident details.
+          alertId: message.data['alertId']?.toString(),
+          reportId: message.data['alertId'] != null
+              ? null
+              : message.data['reportId']?.toString(),
           isAlertOverride: isAlert,
         );
       }
@@ -223,10 +234,12 @@ class NotificationService {
     required String title,
     required String body,
   }) {
-    final String id = message.data['alertId'] ??
-        message.data['id'] ??
-        message.messageId ??
-        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}';
+    final String? alertId = message.data['alertId']?.toString();
+    final String id = (alertId != null && alertId.isNotEmpty)
+        ? 'admin_alert_$alertId'
+        : (message.data['id'] ??
+            message.messageId ??
+            'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
 
     final bool isAlert = message.data['isAdminAlert'] == 'true' ||
         message.data.containsKey('alertId') ||
@@ -241,6 +254,7 @@ class NotificationService {
         description: body,
         timestamp: DateTime.now(),
         isAlert: isAlert,
+        alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
       ),
     );
   }
@@ -289,6 +303,9 @@ class NotificationService {
     // page can open its live details when the card is tapped.
     String? reportId,
     Map<String, dynamic>? reportData,
+    // Set for admin broadcast alerts so a tap opens the Alert Details card
+    // instead of the incident details screen.
+    String? alertId,
     bool? isAlertOverride,
   }) async {
     if (!await areNotificationsEnabled()) {
@@ -304,13 +321,18 @@ class NotificationService {
 
     notificationStore.addOrUpdate(
       NotificationItem(
-        id: reportId != null ? 'local_$reportId' : 'local_$id',
+        id: (alertId != null && alertId.isNotEmpty)
+            ? 'admin_alert_$alertId'
+            : (reportId != null ? 'local_$reportId' : 'local_$id'),
         title: title,
         description: body,
         timestamp: DateTime.now(),
         isAlert: isAlert,
-        reportId: reportId ?? payload,
+        reportId: (alertId != null && alertId.isNotEmpty)
+            ? null
+            : (reportId ?? payload),
         reportData: reportData,
+        alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
       ),
     );
 

@@ -12,6 +12,7 @@ import '../services/notification_store.dart';
 import '../services/my_reports_store.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../subpages/livedetails_reports.dart';
+import '../components/alert_details_dialog.dart';
 
 // NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
 // that NotificationService (FCM) and this page share one model and one
@@ -159,6 +160,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
             isAlert: true,
             isSuccess: false,
             isProcessing: false,
+            alertId: docId,
+            alertData: AlertDetails.compactFromFirestore(data, docId),
           );
 
           _upsertNotification(item);
@@ -692,6 +695,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
       final String title = data['title']?.toString().trim() ?? 'Emergency Alert';
       final String message = data['message']?.toString().trim() ?? data['body']?.toString().trim() ?? '';
 
+      final bool hasRealAlertId = data['alertId'] != null || data['id'] != null;
       final alertItem = NotificationItem(
         id: 'admin_alert_$alertId',
         title: title.startsWith('🚨') ? title : '🚨 $title',
@@ -700,6 +704,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
         isAlert: true,
         isSuccess: false,
         isProcessing: false,
+        alertId: hasRealAlertId ? alertId : null,
+        alertData: AlertDetails.compactFromFirestore(data, alertId),
       );
 
       _upsertNotification(alertItem);
@@ -1054,6 +1060,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
     isDark ? Colors.grey.shade400 : const Color(0xFF94A3B8);
 
     final bool canOpenDetails = item.hasReportDetails;
+    // Admin broadcast alerts (sent from the dashboard's Alerts tab) open
+    // the "Alert Details" card instead. Report notifications keep opening
+    // incident details, so that check goes first.
+    final bool canOpenAlert = !canOpenDetails && item.isBroadcastAlert;
+    final bool isTappable = canOpenDetails || canOpenAlert;
     final bool isOpening = _openingNotificationId == item.id;
 
     return Padding(
@@ -1067,8 +1078,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
           // opens that incident's live details -- the same screen the
           // Reports page's "View Live Details" button opens. Notifications
           // with no report behind them (generic app updates) stay inert.
-          onTap: canOpenDetails && !isOpening
-              ? () => _openReportDetails(item)
+          onTap: isTappable && !isOpening
+              ? () {
+                  if (canOpenAlert) {
+                    _openAlertDetails(item);
+                  } else {
+                    _openReportDetails(item);
+                  }
+                }
               : null,
           child: Container(
         decoration: BoxDecoration(
@@ -1150,7 +1167,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     ),
                   ),
                   // Affordance so it's obvious the card leads somewhere.
-                  if (canOpenDetails) ...[
+                  if (isTappable) ...[
                     const SizedBox(height: 6),
                     Row(
                       children: [
@@ -1172,7 +1189,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
                           ),
                         const SizedBox(width: 5),
                         Text(
-                          isOpening ? 'Opening...' : 'View incident details',
+                          isOpening
+                              ? 'Opening...'
+                              : (canOpenAlert
+                                  ? 'View alert details'
+                                  : 'View incident details'),
                           style: GoogleFonts.montserrat(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
@@ -1191,6 +1212,50 @@ class _NotificationsPageState extends State<NotificationsPage> {
         ),
       ),
     );
+  }
+
+  /// Opens the "Alert Details" card for an admin broadcast alert.
+  ///
+  /// Tries the live `alerts/<id>` document first so the status badge is
+  /// current (an alert may have been cancelled or expired since it was
+  /// received), and falls back to the snapshot saved with the notification
+  /// -- or, failing that, the notification's own title and message -- so
+  /// the card always opens, even offline or once the alert is archived.
+  Future<void> _openAlertDetails(NotificationItem item) async {
+    final String? alertId = item.resolvedAlertId;
+    Map<String, dynamic>? live;
+
+    if (alertId != null && alertId.isNotEmpty) {
+      setState(() => _openingNotificationId = item.id);
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection('alerts')
+            .doc(alertId)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        final data = doc.data();
+        if (doc.exists && data != null) {
+          live = AlertDetails.compactFromFirestore(data, alertId);
+        }
+      } catch (error) {
+        debugPrint('Alert details lookup failed for $alertId: $error');
+      }
+      if (!mounted) return;
+      setState(() => _openingNotificationId = null);
+
+      // Keep what we just fetched so it also opens offline next time.
+      if (live != null) {
+        _upsertNotification(item.copyWith(alertData: live));
+      }
+    }
+
+    final details = AlertDetails.fromMap(
+      live ?? item.alertData ?? const <String, dynamic>{},
+      fallbackTitle: item.title,
+      fallbackMessage: item.description,
+    );
+    if (!mounted) return;
+    await showAlertDetailsDialog(context, details);
   }
 
   /// Opens the live details screen for the incident a notification is

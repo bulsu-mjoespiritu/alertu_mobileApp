@@ -36,6 +36,16 @@ class NotificationItem {
   /// fetching by [reportId].
   final Map<String, dynamic>? reportData;
 
+  /// Id of the admin broadcast alert (the `alerts` Firestore document sent
+  /// from the dashboard's Alerts tab) this notification is about. Lets a
+  /// tap open the "Alert Details" card.
+  final String? alertId;
+
+  /// JSON-safe snapshot of that alert (see `AlertDetails.compactFromFirestore`)
+  /// so the details card still opens after the alert expires or is
+  /// archived, and while offline.
+  final Map<String, dynamic>? alertData;
+
   NotificationItem({
     required this.id,
     required this.title,
@@ -47,7 +57,26 @@ class NotificationItem {
     this.isRead = false,
     this.reportId,
     this.reportData,
+    this.alertId,
+    this.alertData,
   });
+
+  /// True when this notification is an admin broadcast alert that can open
+  /// the "Alert Details" card.
+  bool get isBroadcastAlert =>
+      (alertId != null && alertId!.trim().isNotEmpty) ||
+      (alertData != null && alertData!.isNotEmpty) ||
+      id.startsWith('admin_alert_');
+
+  /// The alert's Firestore document id, when it can be worked out.
+  String? get resolvedAlertId {
+    if (alertId != null && alertId!.trim().isNotEmpty) return alertId!.trim();
+    if (id.startsWith('admin_alert_')) {
+      final stripped = id.substring('admin_alert_'.length);
+      return stripped.isEmpty ? null : stripped;
+    }
+    return null;
+  }
 
   /// True when this notification can open an incident details screen.
   bool get hasReportDetails =>
@@ -65,6 +94,8 @@ class NotificationItem {
     bool? isRead,
     String? reportId,
     Map<String, dynamic>? reportData,
+    String? alertId,
+    Map<String, dynamic>? alertData,
   }) {
     return NotificationItem(
       id: id ?? this.id,
@@ -77,6 +108,8 @@ class NotificationItem {
       isRead: isRead ?? this.isRead,
       reportId: reportId ?? this.reportId,
       reportData: reportData ?? this.reportData,
+      alertId: alertId ?? this.alertId,
+      alertData: alertData ?? this.alertData,
     );
   }
 
@@ -91,10 +124,13 @@ class NotificationItem {
         'isRead': isRead,
         if (reportId != null) 'reportId': reportId,
         if (reportData != null) 'reportData': reportData,
+        if (alertId != null) 'alertId': alertId,
+        if (alertData != null) 'alertData': alertData,
       };
 
   factory NotificationItem.fromJson(Map<String, dynamic> json) {
     final rawReportData = json['reportData'];
+    final rawAlertData = json['alertData'];
     return NotificationItem(
       id: json['id'] as String,
       title: json['title'] as String? ?? '',
@@ -108,6 +144,10 @@ class NotificationItem {
       reportId: json['reportId'] as String?,
       reportData: rawReportData is Map
           ? Map<String, dynamic>.from(rawReportData)
+          : null,
+      alertId: json['alertId'] as String?,
+      alertData: rawAlertData is Map
+          ? Map<String, dynamic>.from(rawAlertData)
           : null,
     );
   }
