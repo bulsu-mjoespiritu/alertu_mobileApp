@@ -59,6 +59,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   // Report id currently being opened, used to show a spinner on that one
   // card while its details are fetched.
   String? _openingNotificationId;
+  StreamSubscription<QuerySnapshot>? _alertsSubscription;
+  String? _userBarangay;
 
   @override
   void initState() {
@@ -83,6 +85,90 @@ class _NotificationsPageState extends State<NotificationsPage> {
     // SocketService.on attaches to the live socket instance, so initialize
     // the socket first and register page listeners immediately afterward.
     _initializeRealtimeNotifications();
+    _startAlertsBridge();
+  }
+
+  Future<void> _startAlertsBridge() async {
+    await _loadUserBarangay();
+    _listenToActiveAlerts();
+  }
+
+  Future<void> _loadUserBarangay() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      final doc = await FirebaseFirestore.instance.collection('citizens').doc(user.uid).get();
+      if (doc.exists && mounted) {
+        final data = doc.data();
+        setState(() {
+          _userBarangay = (data?['barangay'] ?? data?['zone'])?.toString().trim();
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _listenToActiveAlerts() {
+    _alertsSubscription?.cancel();
+    try {
+      _alertsSubscription = FirebaseFirestore.instance
+          .collection('alerts')
+          .where('status', isEqualTo: 'active')
+          .where('isArchived', isEqualTo: false)
+          .snapshots()
+          .listen((snapshot) {
+        if (!mounted) return;
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+        for (final docSnap in snapshot.docs) {
+          final data = docSnap.data();
+          final String docId = docSnap.id;
+          final String title = data['title']?.toString().trim() ?? 'Emergency Alert';
+          final String message = data['message']?.toString().trim() ?? '';
+
+          // Check if alert is expired
+          final expiresAtStr = data['expiresAt']?.toString();
+          if (expiresAtStr != null && expiresAtStr.isNotEmpty) {
+            final exp = DateTime.tryParse(expiresAtStr);
+            if (exp != null && exp.millisecondsSinceEpoch < nowMs) {
+              continue;
+            }
+          }
+
+          // Check barangay scope if targeted
+          final scope = data['recipientScope']?.toString() ?? '';
+          if (scope.contains('Specific') && data['barangays'] is List) {
+            final targetBarangays = List<String>.from(data['barangays']);
+            if (_userBarangay != null && _userBarangay!.isNotEmpty) {
+              final matches = targetBarangays.any((b) =>
+                  b.toLowerCase().contains(_userBarangay!.toLowerCase()) ||
+                  _userBarangay!.toLowerCase().contains(b.toLowerCase()));
+              if (!matches) continue;
+            }
+          }
+
+          final DateTime timestamp = (data['createdAtServer'] as Timestamp?)?.toDate() ??
+              (data['createdAt'] != null
+                  ? DateTime.tryParse(data['createdAt'].toString()) ?? DateTime.now()
+                  : DateTime.now());
+
+          final item = NotificationItem(
+            id: 'admin_alert_$docId',
+            title: title.startsWith('🚨') ? title : '🚨 $title',
+            description: message,
+            timestamp: timestamp,
+            isAlert: true,
+            isSuccess: false,
+            isProcessing: false,
+          );
+
+          _upsertNotification(item);
+        }
+      }, onError: (err) {
+        debugPrint('⚠️ Error listening to Firestore alerts: $err');
+      });
+    } catch (e) {
+      debugPrint('⚠️ Could not initialize Firestore alerts stream: $e');
+    }
   }
 
   void _handleVisibilityChanged() {
@@ -595,6 +681,62 @@ class _NotificationsPageState extends State<NotificationsPage> {
     SocketService.on('ADMIN_ACTION_EVENT', _socketEventListener!);
     SocketService.on('CITIZEN_REPORT_UPDATED', _socketEventListener!);
     SocketService.on('DISPATCH_VERIFIED_INCIDENT', _socketEventListener!);
+
+    // 🚨 Emergency Broadcast Alert Listener
+    SocketService.on('NEW_BROADCAST_ALERT', (dynamic rawData) {
+      debugPrint('🚨 [NotificationsPage] Received NEW_BROADCAST_ALERT via socket: $rawData');
+      if (!mounted) return;
+
+      final data = rawData is Map ? Map<String, dynamic>.from(rawData) : <String, dynamic>{};
+      final String alertId = (data['alertId'] ?? data['id'] ?? 'alert_${DateTime.now().millisecondsSinceEpoch}').toString();
+      final String title = data['title']?.toString().trim() ?? 'Emergency Alert';
+      final String message = data['message']?.toString().trim() ?? data['body']?.toString().trim() ?? '';
+
+      final alertItem = NotificationItem(
+        id: 'admin_alert_$alertId',
+        title: title.startsWith('🚨') ? title : '🚨 $title',
+        description: message,
+        timestamp: DateTime.now(),
+        isAlert: true,
+        isSuccess: false,
+        isProcessing: false,
+      );
+
+      _upsertNotification(alertItem);
+
+      // Show in-app banner toast
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFFBE123C),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          content: Row(
+            children: [
+              const Icon(
+                LucideIcons.triangleAlert,
+                color: Colors.white,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title.startsWith('🚨') ? title : '🚨 $title',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    });
   }
 
   void _cleanupSocketListeners() {
@@ -602,10 +744,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
     SocketService.off('ADMIN_ACTION_EVENT');
     SocketService.off('CITIZEN_REPORT_UPDATED');
     SocketService.off('DISPATCH_VERIFIED_INCIDENT');
+    SocketService.off('NEW_BROADCAST_ALERT');
   }
 
   @override
   void dispose() {
+    _alertsSubscription?.cancel();
     widget.visibility?.removeListener(_handleVisibilityChanged);
     notificationStore.notifications.removeListener(_syncFromStore);
     _cleanupSocketListeners();

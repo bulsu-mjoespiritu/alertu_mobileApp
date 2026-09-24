@@ -284,16 +284,31 @@ class ApiService {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       final token = await _getIdToken();
 
-      final response = await http.post(
+      final payload = jsonEncode({
+        'fcmToken': fcmToken,
+        'uid': uid,
+      });
+      final headers = {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      };
+
+      // Try /citizens/register-fcm-token first
+      var response = await http.post(
+        Uri.parse('$_baseUrl/citizens/register-fcm-token'),
+        headers: headers,
+        body: payload,
+      );
+
+      if (response.statusCode == 200) {
+        return true;
+      }
+
+      // Fallback to /register-fcm-token
+      response = await http.post(
         Uri.parse('$_baseUrl/register-fcm-token'),
-        headers: {
-          'Content-Type': 'application/json',
-          if (token != null) 'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'fcmToken': fcmToken,
-          'uid': uid,
-        }),
+        headers: headers,
+        body: payload,
       );
 
       return response.statusCode == 200;

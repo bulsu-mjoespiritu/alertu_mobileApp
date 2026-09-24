@@ -181,19 +181,38 @@ class NotificationStore {
 
     try {
       final file = await _fileForUser(uid);
+      List<NotificationItem> items = [];
       if (await file.exists()) {
         final raw = await file.readAsString();
         final decoded = jsonDecode(raw) as List<dynamic>;
-        final items = decoded
+        items = decoded
             .map((e) => NotificationItem.fromJson(e as Map<String, dynamic>))
             .toList();
-        for (final item in items) {
-          _knownIds.add(item.id);
-        }
-        notifications.value = _sorted(items);
-      } else {
-        notifications.value = <NotificationItem>[];
       }
+
+      // Check and merge any pending broadcast notifications saved when uid was null
+      final bFile = await _fallbackBroadcastFile();
+      if (await bFile.exists()) {
+        try {
+          final bRaw = await bFile.readAsString();
+          final bDecoded = jsonDecode(bRaw) as List<dynamic>;
+          final bItems = bDecoded
+              .map((e) => NotificationItem.fromJson(e as Map<String, dynamic>))
+              .toList();
+          final existingIds = items.map((i) => i.id).toSet();
+          for (final bItem in bItems) {
+            if (!existingIds.contains(bItem.id)) {
+              items.add(bItem);
+            }
+          }
+          await bFile.delete(); // Consumed into this user's notifications
+        } catch (_) {}
+      }
+
+      for (final item in items) {
+        _knownIds.add(item.id);
+      }
+      notifications.value = _sorted(items);
     } catch (error) {
       debugPrint('NotificationStore: failed to load persisted notifications: $error');
       notifications.value = <NotificationItem>[];
@@ -284,6 +303,21 @@ class NotificationStore {
     if (_uid == null) {
       _pendingBeforeUid.removeWhere((existing) => existing.id == item.id);
       _pendingBeforeUid.add(item);
+      try {
+        final bFile = await _fallbackBroadcastFile();
+        List<dynamic> existingJson = [];
+        if (await bFile.exists()) {
+          final raw = await bFile.readAsString();
+          existingJson = jsonDecode(raw) as List<dynamic>;
+        }
+        final existingIds = existingJson.map((e) => (e as Map)['id']?.toString()).toSet();
+        if (!existingIds.contains(item.id)) {
+          existingJson.insert(0, item.toJson());
+          await bFile.writeAsString(jsonEncode(existingJson));
+        }
+      } catch (err) {
+        debugPrint('NotificationStore: failed to flush broadcast item to file: $err');
+      }
       return;
     }
     final withoutExisting =
@@ -331,6 +365,11 @@ class NotificationStore {
     // One file per account, so notifications never leak across accounts
     // signed into the same device.
     return File('${dir.path}/notifications_$uid.json');
+  }
+
+  Future<File> _fallbackBroadcastFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/notifications_broadcast.json');
   }
 
   Future<void> _persist() async {

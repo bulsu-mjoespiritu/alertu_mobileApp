@@ -49,6 +49,7 @@ void main() async {
   await Firebase.initializeApp();
 
   try {
+    await NotificationService.instance.initialize();
     await ReportNotifService.instance.initializeAndStart();
     await GoogleSignIn.instance.initialize();
   } catch (e) {

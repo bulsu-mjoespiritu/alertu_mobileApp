@@ -411,6 +411,8 @@ class _WrapperState extends ConsumerState<Wrapper> with WidgetsBindingObserver {
               // RULE 1: Profile complete and terms accepted -> Homepage
               if (hasCitizenId && hasPhone && hasZone && dpaAccepted) {
                 _syncFcmToken(currentUser.uid);
+                final String userBarangay = data?['barangay']?.toString() ?? zone;
+                NotificationService.instance.syncBarangaySubscription(userBarangay);
                 if (!_isOnHomepage) {
                   _isOnHomepage = true;
                   _updatePresence(isActive: true);
