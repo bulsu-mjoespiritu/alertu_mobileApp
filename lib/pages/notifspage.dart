@@ -12,11 +12,8 @@ import '../services/notification_store.dart';
 import '../services/my_reports_store.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../subpages/livedetails_reports.dart';
-<<<<<<< Updated upstream
 import '../components/alert_details_dialog.dart';
-=======
 import '../services/notification_service.dart';
->>>>>>> Stashed changes
 
 // NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
 // that NotificationService (FCM) and this page share one model and one
