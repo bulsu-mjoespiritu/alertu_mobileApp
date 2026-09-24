@@ -14,6 +14,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/io_client.dart';
 import '../services/socket.dart';
 import '../services/api_service.dart';
+import '../services/notification_service.dart';
 
 // --- CUSTOM UNSECURE CACHE MANAGER HELPER ---
 class CustomUnsecureCacheManager {
@@ -565,6 +566,9 @@ class _ProfileManagementPageState extends State<ProfileManagementPage> {
           await directDocRef.set(firestorePayload, SetOptions(merge: true));
         }
       }
+
+      // Sync FCM barangay topic subscription dynamically
+      NotificationService.instance.syncBarangaySubscription(finalZone);
 
       try {
         final idToken = await user.getIdToken(true);

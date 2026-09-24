@@ -12,7 +12,11 @@ import '../services/notification_store.dart';
 import '../services/my_reports_store.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../subpages/livedetails_reports.dart';
+<<<<<<< Updated upstream
 import '../components/alert_details_dialog.dart';
+=======
+import '../services/notification_service.dart';
+>>>>>>> Stashed changes
 
 // NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
 // that NotificationService (FCM) and this page share one model and one
@@ -98,11 +102,26 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
     try {
-      final doc = await FirebaseFirestore.instance.collection('citizens').doc(user.uid).get();
-      if (doc.exists && mounted) {
-        final data = doc.data();
+      Map<String, dynamic>? data;
+      final directDoc = await FirebaseFirestore.instance.collection('citizens').doc(user.uid).get();
+      if (directDoc.exists && directDoc.data() != null) {
+        data = directDoc.data();
+      } else {
+        final querySnap = await FirebaseFirestore.instance
+            .collection('citizens')
+            .where('authUid', isEqualTo: user.uid)
+            .limit(1)
+            .get();
+        if (querySnap.docs.isNotEmpty) {
+          data = querySnap.docs.first.data();
+        }
+      }
+
+      if (data != null && mounted) {
+        final raw = (data['barangay'] ?? data['zone'] ?? data['zoneAddress'] ?? data['location'])?.toString().trim();
+        final matched = NotificationService.matchPaombongBarangay(raw);
         setState(() {
-          _userBarangay = (data?['barangay'] ?? data?['zone'])?.toString().trim();
+          _userBarangay = matched ?? raw;
         });
       }
     } catch (_) {}
@@ -135,16 +154,19 @@ class _NotificationsPageState extends State<NotificationsPage> {
             }
           }
 
-          // Check barangay scope if targeted
+          // Check barangay scope if targeted to specific barangays
           final scope = data['recipientScope']?.toString() ?? '';
           if (scope.contains('Specific') && data['barangays'] is List) {
             final targetBarangays = List<String>.from(data['barangays']);
-            if (_userBarangay != null && _userBarangay!.isNotEmpty) {
-              final matches = targetBarangays.any((b) =>
-                  b.toLowerCase().contains(_userBarangay!.toLowerCase()) ||
-                  _userBarangay!.toLowerCase().contains(b.toLowerCase()));
-              if (!matches) continue;
-            }
+            if (_userBarangay == null || _userBarangay!.isEmpty) continue;
+            final userCanonical = NotificationService.matchPaombongBarangay(_userBarangay) ?? _userBarangay!;
+            final matches = targetBarangays.any((b) {
+              final targetCanonical = NotificationService.matchPaombongBarangay(b) ?? b;
+              return targetCanonical.toLowerCase() == userCanonical.toLowerCase() ||
+                     userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
+                     targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
+            });
+            if (!matches) continue;
           }
 
           final DateTime timestamp = (data['createdAtServer'] as Timestamp?)?.toDate() ??
@@ -686,11 +708,34 @@ class _NotificationsPageState extends State<NotificationsPage> {
     SocketService.on('DISPATCH_VERIFIED_INCIDENT', _socketEventListener!);
 
     // 🚨 Emergency Broadcast Alert Listener
-    SocketService.on('NEW_BROADCAST_ALERT', (dynamic rawData) {
+    SocketService.on('NEW_BROADCAST_ALERT', (dynamic rawData) async {
       debugPrint('🚨 [NotificationsPage] Received NEW_BROADCAST_ALERT via socket: $rawData');
       if (!mounted) return;
 
       final data = rawData is Map ? Map<String, dynamic>.from(rawData) : <String, dynamic>{};
+
+      // Check barangay scope if targeted to specific barangays
+      final scope = data['recipientScope']?.toString() ?? '';
+      if (scope.contains('Specific') && data['barangays'] is List) {
+        final targetBarangays = List<String>.from(data['barangays']);
+        if (_userBarangay == null || _userBarangay!.isEmpty) {
+          await _loadUserBarangay();
+        }
+        if (!mounted) return;
+        if (_userBarangay == null || _userBarangay!.isEmpty) return;
+        final userCanonical = NotificationService.matchPaombongBarangay(_userBarangay) ?? _userBarangay!;
+        final matches = targetBarangays.any((b) {
+          final targetCanonical = NotificationService.matchPaombongBarangay(b) ?? b;
+          return targetCanonical.toLowerCase() == userCanonical.toLowerCase() ||
+                 userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
+                 targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
+        });
+        if (!matches) {
+          debugPrint('ℹ️ [NotificationsPage] Ignored socket alert for $targetBarangays (User is in: $_userBarangay)');
+          return;
+        }
+      }
+
       final String alertId = (data['alertId'] ?? data['id'] ?? 'alert_${DateTime.now().millisecondsSinceEpoch}').toString();
       final String title = data['title']?.toString().trim() ?? 'Emergency Alert';
       final String message = data['message']?.toString().trim() ?? data['body']?.toString().trim() ?? '';

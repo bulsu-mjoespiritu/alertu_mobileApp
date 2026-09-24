@@ -111,21 +111,84 @@ class NotificationService {
     }
   }
 
+  static const List<String> paombongBarangays = [
+    'Poblacion',
+    'San Isidro',
+    'San Jose',
+    'Santo Rosario',
+    'Santo Niño',
+    'San Roque',
+    'Binakod',
+    'Kapitangan',
+    'Malumot',
+    'Masukol',
+    'Pinalagdan',
+    'San Vicente',
+    'Santa Cruz',
+    'Santo Cristo',
+  ];
+
+  /// Detects and extracts the canonical Paombong barangay name from any address or zone string
+  static String? matchPaombongBarangay(String? addressOrZone) {
+    if (addressOrZone == null || addressOrZone.trim().isEmpty) return null;
+    final text = addressOrZone.toLowerCase().replaceAll('ñ', 'n').replaceAll('Ñ', 'n');
+
+    final Map<String, String> lookup = {
+      'poblacion': 'Poblacion',
+      'san isidro': 'San Isidro',
+      'san jose': 'San Jose',
+      'santo rosario': 'Santo Rosario',
+      'sto. rosario': 'Santo Rosario',
+      'sto rosario': 'Santo Rosario',
+      'santo nino': 'Santo Niño',
+      'sto. nino': 'Santo Niño',
+      'sto nino': 'Santo Niño',
+      'san roque': 'San Roque',
+      'binakod': 'Binakod',
+      'kapitangan': 'Kapitangan',
+      'malumot': 'Malumot',
+      'masukol': 'Masukol',
+      'pinalagdan': 'Pinalagdan',
+      'san vicente': 'San Vicente',
+      'santa cruz': 'Santa Cruz',
+      'sta. cruz': 'Santa Cruz',
+      'sta cruz': 'Santa Cruz',
+      'santo cristo': 'Santo Cristo',
+      'sto. cristo': 'Santo Cristo',
+      'sto cristo': 'Santo Cristo',
+    };
+
+    for (final entry in lookup.entries) {
+      if (text.contains(entry.key)) {
+        return entry.value;
+      }
+    }
+    return addressOrZone.trim();
+  }
+
+  /// Normalizes a barangay name to match the server FCM topic format: [a-zA-Z0-9-_.~%]+
+  static String normalizeBarangayTopic(String barangayName) {
+    final matched = matchPaombongBarangay(barangayName) ?? barangayName;
+    final cleaned = matched
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'^(brgy\.?|barangay)\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bsto\.?\s*', caseSensitive: false), 'santo_')
+        .replaceAll(RegExp(r'\bsta\.?\s*', caseSensitive: false), 'santa_')
+        .replaceAll(RegExp(r'[ñÑ]'), 'n')
+        .replaceAll(RegExp(r'[^a-z0-9_-]'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return 'barangay_$cleaned';
+  }
+
   String? _currentSubscribedBarangayTopic;
 
   /// Syncs user's barangay topic subscription dynamically
   Future<void> syncBarangaySubscription(String? barangayName) async {
     if (barangayName == null || barangayName.trim().isEmpty) return;
-    final cleaned = barangayName
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'^(brgy\.?|barangay)\s*', caseSensitive: false), '')
-        .replaceAll(RegExp(r'[^a-z0-9_-]'), '_')
-        .replaceAll(RegExp(r'_+'), '_')
-        .replaceAll(RegExp(r'^_|_$'), '');
-    if (cleaned.isEmpty) return;
-    final newTopic = 'barangay_$cleaned';
-    if (_currentSubscribedBarangayTopic == newTopic) return;
+    final newTopic = normalizeBarangayTopic(barangayName);
+    if (newTopic == 'barangay_' || _currentSubscribedBarangayTopic == newTopic) return;
 
     try {
       if (_currentSubscribedBarangayTopic != null) {
