@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -183,7 +184,18 @@ class _NotificationsPageState extends State<NotificationsPage> {
             alertData: AlertDetails.compactFromFirestore(data, docId),
           );
 
+          // This stream replays every still-active alert each time it
+          // (re)connects, so only alerts that are new to this device --
+          // and recent -- should raise a system notification.
+          final bool isNewToDevice = !_isKnownNotification(item.id);
+          final bool isRecent = DateTime.now().difference(timestamp) <
+              const Duration(minutes: 30);
+
           _upsertNotification(item);
+
+          if (isNewToDevice && isRecent) {
+            _showDeviceAlert(item);
+          }
         }
       }, onError: (err) {
         debugPrint('⚠️ Error listening to Firestore alerts: $err');
@@ -238,6 +250,30 @@ class _NotificationsPageState extends State<NotificationsPage> {
       }
     });
     notificationStore.addOrUpdate(item);
+  }
+
+  /// True when a notification with [id] is already in the page's list or
+  /// the persisted store.
+  bool _isKnownNotification(String id) =>
+      _notifications.any((n) => n.id == id) ||
+      notificationStore.notifications.value.any((n) => n.id == id);
+
+  /// Raises a real phone notification (tray banner, sound, vibration) for
+  /// an admin broadcast alert. The in-app card is already saved by
+  /// [_upsertNotification], so the service is told not to save it again.
+  void _showDeviceAlert(NotificationItem item) {
+    if (kIsWeb) return;
+    final String alertId = item.resolvedAlertId ?? item.id;
+    unawaited(
+      NotificationService.instance.showLocalNotification(
+        id: alertId.hashCode,
+        title: item.title,
+        body: item.description,
+        alertId: alertId,
+        isAlertOverride: true,
+        saveToStore: false,
+      ),
+    );
   }
 
   /// Replaces the currently-open "Report Under Review" card with its
@@ -750,13 +786,17 @@ class _NotificationsPageState extends State<NotificationsPage> {
         alertData: AlertDetails.compactFromFirestore(data, alertId),
       );
 
+      final bool isNewToDevice = !_isKnownNotification(alertItem.id);
       _upsertNotification(alertItem);
+      if (isNewToDevice) {
+        _showDeviceAlert(alertItem);
+      }
 
       // Show in-app banner toast
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          backgroundColor: const Color(0xFFBE123C),
+          backgroundColor: const Color(0xFF2563EB),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
@@ -1072,7 +1112,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
     // Dynamic theme colors for light/dark modes
     final Color cardBorderColor = item.isSuccess
         ? (isDark ? const Color(0xFF065F46) : const Color(0xFFA7F3D0))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE))
+        : item.isAlert
         ? (isDark ? const Color(0xFF881337) : const Color(0xFFFECDD3))
         : (item.isProcessing
         ? (isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE))
@@ -1080,7 +1122,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
     final Color cardBgColor = item.isSuccess
         ? (isDark ? const Color(0xFF022C22) : const Color(0xFFECFDF5))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFF172554) : const Color(0xFFEFF6FF))
+        : item.isAlert
         ? (isDark ? const Color(0xFF4C0519) : const Color(0xFFFFF1F2))
         : (item.isProcessing
         ? (isDark ? const Color(0xFF172554) : const Color(0xFFEFF6FF))
@@ -1088,13 +1132,17 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
     final Color titleTextColor = item.isSuccess
         ? (isDark ? const Color(0xFF6EE7B7) : const Color(0xFF065F46))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFF93C5FD) : const Color(0xFF1E40AF))
+        : item.isAlert
         ? (isDark ? const Color(0xFFFDA4AF) : const Color(0xFF9F1239))
         : (isDark ? Colors.white : const Color(0xFF0F172A)));
 
     final Color bodyTextColor = item.isSuccess
         ? (isDark ? const Color(0xFFA7F3D0) : const Color(0xFF047857))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFFBFDBFE) : const Color(0xFF1D4ED8))
+        : item.isAlert
         ? (isDark ? const Color(0xFFFECACA) : const Color(0xFFBE123C))
         : (isDark ? Colors.grey.shade300 : const Color(0xFF475569)));
 
@@ -1197,7 +1245,15 @@ class _NotificationsPageState extends State<NotificationsPage> {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    item.description,
+                    // Broadcast alerts show just their type on the card
+                    // (e.g. "General"); the full message lives in the
+                    // Alert Details dialog.
+                    canOpenAlert
+                        ? ((item.alertData?['type']?.toString().trim() ?? '')
+                                .isNotEmpty
+                            ? item.alertData!['type'].toString().trim()
+                            : 'General')
+                        : item.description,
                     style: TextStyle(
                       fontFamily:
                       Theme.of(context).textTheme.bodyMedium?.fontFamily,
@@ -1414,7 +1470,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
       ),
       child: Icon(
         item.isAlert ? LucideIcons.triangleAlert : LucideIcons.mailCheck,
-        color: item.isAlert
+        color: item.isBroadcastAlert
+            ? (isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB))
+            : item.isAlert
             ? (isDark ? const Color(0xFFFB7185) : const Color(0xFFE11D48))
             : (isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB)),
         size: 16,

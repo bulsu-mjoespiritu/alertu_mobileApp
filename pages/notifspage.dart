@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -12,6 +13,8 @@ import '../services/notification_store.dart';
 import '../services/my_reports_store.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../subpages/livedetails_reports.dart';
+import '../components/alert_details_dialog.dart';
+import '../services/notification_service.dart';
 
 // NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
 // that NotificationService (FCM) and this page share one model and one
@@ -59,6 +62,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   // Report id currently being opened, used to show a spinner on that one
   // card while its details are fetched.
   String? _openingNotificationId;
+  StreamSubscription<QuerySnapshot>? _alertsSubscription;
+  String? _userBarangay;
 
   @override
   void initState() {
@@ -83,6 +88,121 @@ class _NotificationsPageState extends State<NotificationsPage> {
     // SocketService.on attaches to the live socket instance, so initialize
     // the socket first and register page listeners immediately afterward.
     _initializeRealtimeNotifications();
+    _startAlertsBridge();
+  }
+
+  Future<void> _startAlertsBridge() async {
+    await _loadUserBarangay();
+    _listenToActiveAlerts();
+  }
+
+  Future<void> _loadUserBarangay() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      Map<String, dynamic>? data;
+      final directDoc = await FirebaseFirestore.instance.collection('citizens').doc(user.uid).get();
+      if (directDoc.exists && directDoc.data() != null) {
+        data = directDoc.data();
+      } else {
+        final querySnap = await FirebaseFirestore.instance
+            .collection('citizens')
+            .where('authUid', isEqualTo: user.uid)
+            .limit(1)
+            .get();
+        if (querySnap.docs.isNotEmpty) {
+          data = querySnap.docs.first.data();
+        }
+      }
+
+      if (data != null && mounted) {
+        final raw = (data['barangay'] ?? data['zone'] ?? data['zoneAddress'] ?? data['location'])?.toString().trim();
+        final matched = NotificationService.matchPaombongBarangay(raw);
+        setState(() {
+          _userBarangay = matched ?? raw;
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _listenToActiveAlerts() {
+    _alertsSubscription?.cancel();
+    try {
+      _alertsSubscription = FirebaseFirestore.instance
+          .collection('alerts')
+          .where('status', isEqualTo: 'active')
+          .where('isArchived', isEqualTo: false)
+          .snapshots()
+          .listen((snapshot) {
+        if (!mounted) return;
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+        for (final docSnap in snapshot.docs) {
+          final data = docSnap.data();
+          final String docId = docSnap.id;
+          final String title = data['title']?.toString().trim() ?? 'Emergency Alert';
+          final String message = data['message']?.toString().trim() ?? '';
+
+          // Check if alert is expired
+          final expiresAtStr = data['expiresAt']?.toString();
+          if (expiresAtStr != null && expiresAtStr.isNotEmpty) {
+            final exp = DateTime.tryParse(expiresAtStr);
+            if (exp != null && exp.millisecondsSinceEpoch < nowMs) {
+              continue;
+            }
+          }
+
+          // Check barangay scope if targeted to specific barangays
+          final scope = data['recipientScope']?.toString() ?? '';
+          if (scope.contains('Specific') && data['barangays'] is List) {
+            final targetBarangays = List<String>.from(data['barangays']);
+            if (_userBarangay == null || _userBarangay!.isEmpty) continue;
+            final userCanonical = NotificationService.matchPaombongBarangay(_userBarangay) ?? _userBarangay!;
+            final matches = targetBarangays.any((b) {
+              final targetCanonical = NotificationService.matchPaombongBarangay(b) ?? b;
+              return targetCanonical.toLowerCase() == userCanonical.toLowerCase() ||
+                     userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
+                     targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
+            });
+            if (!matches) continue;
+          }
+
+          final DateTime timestamp = (data['createdAtServer'] as Timestamp?)?.toDate() ??
+              (data['createdAt'] != null
+                  ? DateTime.tryParse(data['createdAt'].toString()) ?? DateTime.now()
+                  : DateTime.now());
+
+          final item = NotificationItem(
+            id: 'admin_alert_$docId',
+            title: title.startsWith('🚨') ? title : '🚨 $title',
+            description: message,
+            timestamp: timestamp,
+            isAlert: true,
+            isSuccess: false,
+            isProcessing: false,
+            alertId: docId,
+            alertData: AlertDetails.compactFromFirestore(data, docId),
+          );
+
+          // This stream replays every still-active alert each time it
+          // (re)connects, so only alerts that are new to this device --
+          // and recent -- should raise a system notification.
+          final bool isNewToDevice = !_isKnownNotification(item.id);
+          final bool isRecent = DateTime.now().difference(timestamp) <
+              const Duration(minutes: 30);
+
+          _upsertNotification(item);
+
+          if (isNewToDevice && isRecent) {
+            _showDeviceAlert(item);
+          }
+        }
+      }, onError: (err) {
+        debugPrint('⚠️ Error listening to Firestore alerts: $err');
+      });
+    } catch (e) {
+      debugPrint('⚠️ Could not initialize Firestore alerts stream: $e');
+    }
   }
 
   void _handleVisibilityChanged() {
@@ -130,6 +250,30 @@ class _NotificationsPageState extends State<NotificationsPage> {
       }
     });
     notificationStore.addOrUpdate(item);
+  }
+
+  /// True when a notification with [id] is already in the page's list or
+  /// the persisted store.
+  bool _isKnownNotification(String id) =>
+      _notifications.any((n) => n.id == id) ||
+      notificationStore.notifications.value.any((n) => n.id == id);
+
+  /// Raises a real phone notification (tray banner, sound, vibration) for
+  /// an admin broadcast alert. The in-app card is already saved by
+  /// [_upsertNotification], so the service is told not to save it again.
+  void _showDeviceAlert(NotificationItem item) {
+    if (kIsWeb) return;
+    final String alertId = item.resolvedAlertId ?? item.id;
+    unawaited(
+      NotificationService.instance.showLocalNotification(
+        id: alertId.hashCode,
+        title: item.title,
+        body: item.description,
+        alertId: alertId,
+        isAlertOverride: true,
+        saveToStore: false,
+      ),
+    );
   }
 
   /// Replaces the currently-open "Report Under Review" card with its
@@ -595,6 +739,92 @@ class _NotificationsPageState extends State<NotificationsPage> {
     SocketService.on('ADMIN_ACTION_EVENT', _socketEventListener!);
     SocketService.on('CITIZEN_REPORT_UPDATED', _socketEventListener!);
     SocketService.on('DISPATCH_VERIFIED_INCIDENT', _socketEventListener!);
+
+    // 🚨 Emergency Broadcast Alert Listener
+    SocketService.on('NEW_BROADCAST_ALERT', (dynamic rawData) async {
+      debugPrint('🚨 [NotificationsPage] Received NEW_BROADCAST_ALERT via socket: $rawData');
+      if (!mounted) return;
+
+      final data = rawData is Map ? Map<String, dynamic>.from(rawData) : <String, dynamic>{};
+
+      // Check barangay scope if targeted to specific barangays
+      final scope = data['recipientScope']?.toString() ?? '';
+      if (scope.contains('Specific') && data['barangays'] is List) {
+        final targetBarangays = List<String>.from(data['barangays']);
+        if (_userBarangay == null || _userBarangay!.isEmpty) {
+          await _loadUserBarangay();
+        }
+        if (!mounted) return;
+        if (_userBarangay == null || _userBarangay!.isEmpty) return;
+        final userCanonical = NotificationService.matchPaombongBarangay(_userBarangay) ?? _userBarangay!;
+        final matches = targetBarangays.any((b) {
+          final targetCanonical = NotificationService.matchPaombongBarangay(b) ?? b;
+          return targetCanonical.toLowerCase() == userCanonical.toLowerCase() ||
+                 userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
+                 targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
+        });
+        if (!matches) {
+          debugPrint('ℹ️ [NotificationsPage] Ignored socket alert for $targetBarangays (User is in: $_userBarangay)');
+          return;
+        }
+      }
+
+      final String alertId = (data['alertId'] ?? data['id'] ?? 'alert_${DateTime.now().millisecondsSinceEpoch}').toString();
+      final String title = data['title']?.toString().trim() ?? 'Emergency Alert';
+      final String message = data['message']?.toString().trim() ?? data['body']?.toString().trim() ?? '';
+
+      final bool hasRealAlertId = data['alertId'] != null || data['id'] != null;
+      final alertItem = NotificationItem(
+        id: 'admin_alert_$alertId',
+        title: title.startsWith('🚨') ? title : '🚨 $title',
+        description: message,
+        timestamp: DateTime.now(),
+        isAlert: true,
+        isSuccess: false,
+        isProcessing: false,
+        alertId: hasRealAlertId ? alertId : null,
+        alertData: AlertDetails.compactFromFirestore(data, alertId),
+      );
+
+      final bool isNewToDevice = !_isKnownNotification(alertItem.id);
+      _upsertNotification(alertItem);
+      if (isNewToDevice) {
+        _showDeviceAlert(alertItem);
+      }
+
+      // Show in-app banner toast
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF2563EB),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          content: Row(
+            children: [
+              const Icon(
+                LucideIcons.triangleAlert,
+                color: Colors.white,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title.startsWith('🚨') ? title : '🚨 $title',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    });
   }
 
   void _cleanupSocketListeners() {
@@ -602,10 +832,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
     SocketService.off('ADMIN_ACTION_EVENT');
     SocketService.off('CITIZEN_REPORT_UPDATED');
     SocketService.off('DISPATCH_VERIFIED_INCIDENT');
+    SocketService.off('NEW_BROADCAST_ALERT');
   }
 
   @override
   void dispose() {
+    _alertsSubscription?.cancel();
     widget.visibility?.removeListener(_handleVisibilityChanged);
     notificationStore.notifications.removeListener(_syncFromStore);
     _cleanupSocketListeners();
@@ -880,7 +1112,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
     // Dynamic theme colors for light/dark modes
     final Color cardBorderColor = item.isSuccess
         ? (isDark ? const Color(0xFF065F46) : const Color(0xFFA7F3D0))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE))
+        : item.isAlert
         ? (isDark ? const Color(0xFF881337) : const Color(0xFFFECDD3))
         : (item.isProcessing
         ? (isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE))
@@ -888,7 +1122,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
     final Color cardBgColor = item.isSuccess
         ? (isDark ? const Color(0xFF022C22) : const Color(0xFFECFDF5))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFF172554) : const Color(0xFFEFF6FF))
+        : item.isAlert
         ? (isDark ? const Color(0xFF4C0519) : const Color(0xFFFFF1F2))
         : (item.isProcessing
         ? (isDark ? const Color(0xFF172554) : const Color(0xFFEFF6FF))
@@ -896,13 +1132,17 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
     final Color titleTextColor = item.isSuccess
         ? (isDark ? const Color(0xFF6EE7B7) : const Color(0xFF065F46))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFF93C5FD) : const Color(0xFF1E40AF))
+        : item.isAlert
         ? (isDark ? const Color(0xFFFDA4AF) : const Color(0xFF9F1239))
         : (isDark ? Colors.white : const Color(0xFF0F172A)));
 
     final Color bodyTextColor = item.isSuccess
         ? (isDark ? const Color(0xFFA7F3D0) : const Color(0xFF047857))
-        : (item.isAlert
+        : (item.isBroadcastAlert
+        ? (isDark ? const Color(0xFFBFDBFE) : const Color(0xFF1D4ED8))
+        : item.isAlert
         ? (isDark ? const Color(0xFFFECACA) : const Color(0xFFBE123C))
         : (isDark ? Colors.grey.shade300 : const Color(0xFF475569)));
 
@@ -910,6 +1150,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
     isDark ? Colors.grey.shade400 : const Color(0xFF94A3B8);
 
     final bool canOpenDetails = item.hasReportDetails;
+    // Admin broadcast alerts (sent from the dashboard's Alerts tab) open
+    // the "Alert Details" card instead. Report notifications keep opening
+    // incident details, so that check goes first.
+    final bool canOpenAlert = !canOpenDetails && item.isBroadcastAlert;
+    final bool isTappable = canOpenDetails || canOpenAlert;
     final bool isOpening = _openingNotificationId == item.id;
 
     return Padding(
@@ -923,8 +1168,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
           // opens that incident's live details -- the same screen the
           // Reports page's "View Live Details" button opens. Notifications
           // with no report behind them (generic app updates) stay inert.
-          onTap: canOpenDetails && !isOpening
-              ? () => _openReportDetails(item)
+          onTap: isTappable && !isOpening
+              ? () {
+                  if (canOpenAlert) {
+                    _openAlertDetails(item);
+                  } else {
+                    _openReportDetails(item);
+                  }
+                }
               : null,
           child: Container(
         decoration: BoxDecoration(
@@ -1006,7 +1257,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     ),
                   ),
                   // Affordance so it's obvious the card leads somewhere.
-                  if (canOpenDetails) ...[
+                  if (isTappable) ...[
                     const SizedBox(height: 6),
                     Row(
                       children: [
@@ -1028,7 +1279,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
                           ),
                         const SizedBox(width: 5),
                         Text(
-                          isOpening ? 'Opening...' : 'View incident details',
+                          isOpening
+                              ? 'Opening...'
+                              : (canOpenAlert
+                                  ? 'View alert details'
+                                  : 'View incident details'),
                           style: GoogleFonts.montserrat(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
@@ -1047,6 +1302,50 @@ class _NotificationsPageState extends State<NotificationsPage> {
         ),
       ),
     );
+  }
+
+  /// Opens the "Alert Details" card for an admin broadcast alert.
+  ///
+  /// Tries the live `alerts/<id>` document first so the status badge is
+  /// current (an alert may have been cancelled or expired since it was
+  /// received), and falls back to the snapshot saved with the notification
+  /// -- or, failing that, the notification's own title and message -- so
+  /// the card always opens, even offline or once the alert is archived.
+  Future<void> _openAlertDetails(NotificationItem item) async {
+    final String? alertId = item.resolvedAlertId;
+    Map<String, dynamic>? live;
+
+    if (alertId != null && alertId.isNotEmpty) {
+      setState(() => _openingNotificationId = item.id);
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection('alerts')
+            .doc(alertId)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        final data = doc.data();
+        if (doc.exists && data != null) {
+          live = AlertDetails.compactFromFirestore(data, alertId);
+        }
+      } catch (error) {
+        debugPrint('Alert details lookup failed for $alertId: $error');
+      }
+      if (!mounted) return;
+      setState(() => _openingNotificationId = null);
+
+      // Keep what we just fetched so it also opens offline next time.
+      if (live != null) {
+        _upsertNotification(item.copyWith(alertData: live));
+      }
+    }
+
+    final details = AlertDetails.fromMap(
+      live ?? item.alertData ?? const <String, dynamic>{},
+      fallbackTitle: item.title,
+      fallbackMessage: item.description,
+    );
+    if (!mounted) return;
+    await showAlertDetailsDialog(context, details);
   }
 
   /// Opens the live details screen for the incident a notification is
@@ -1163,7 +1462,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
       ),
       child: Icon(
         item.isAlert ? LucideIcons.triangleAlert : LucideIcons.mailCheck,
-        color: item.isAlert
+        color: item.isBroadcastAlert
+            ? (isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB))
+            : item.isAlert
             ? (isDark ? const Color(0xFFFB7185) : const Color(0xFFE11D48))
             : (isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB)),
         size: 16,

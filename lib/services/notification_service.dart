@@ -67,6 +67,11 @@ class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
 
+  /// Admin alert ids that already raised a system notification this
+  /// session, so the same alert arriving over FCM, the socket and the
+  /// Firestore stream only buzzes the phone once.
+  final Set<String> _deviceNotifiedAlertIds = <String>{};
+
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications =
   FlutterLocalNotificationsPlugin();
@@ -370,6 +375,11 @@ class NotificationService {
     // instead of the incident details screen.
     String? alertId,
     bool? isAlertOverride,
+    // Pass false when the caller has already saved a richer copy of this
+    // notification to the store (e.g. the Notifications page, which keeps
+    // the alert's details snapshot). Otherwise the store entry below would
+    // overwrite it with a bare one.
+    bool saveToStore = true,
   }) async {
     if (!await areNotificationsEnabled()) {
       debugPrint('🔕 Local notification suppressed because notifications are disabled.');
@@ -382,22 +392,34 @@ class NotificationService {
          title.toLowerCase().contains('warning') ||
          title.toLowerCase().contains('danger'));
 
-    notificationStore.addOrUpdate(
-      NotificationItem(
-        id: (alertId != null && alertId.isNotEmpty)
-            ? 'admin_alert_$alertId'
-            : (reportId != null ? 'local_$reportId' : 'local_$id'),
-        title: title,
-        description: body,
-        timestamp: DateTime.now(),
-        isAlert: isAlert,
-        reportId: (alertId != null && alertId.isNotEmpty)
-            ? null
-            : (reportId ?? payload),
-        reportData: reportData,
-        alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
-      ),
-    );
+    if (saveToStore) {
+      notificationStore.addOrUpdate(
+        NotificationItem(
+          id: (alertId != null && alertId.isNotEmpty)
+              ? 'admin_alert_$alertId'
+              : (reportId != null ? 'local_$reportId' : 'local_$id'),
+          title: title,
+          description: body,
+          timestamp: DateTime.now(),
+          isAlert: isAlert,
+          reportId: (alertId != null && alertId.isNotEmpty)
+              ? null
+              : (reportId ?? payload),
+          reportData: reportData,
+          alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
+        ),
+      );
+    }
+
+    // An admin alert can reach the phone by several routes at once (FCM,
+    // the socket, the Firestore stream). Only the first one raises the
+    // system notification; the rest just refresh the store above.
+    if (alertId != null && alertId.isNotEmpty) {
+      if (!_deviceNotifiedAlertIds.add(alertId)) {
+        debugPrint('🔕 System notification for alert $alertId already shown.');
+        return;
+      }
+    }
 
     final androidDetails = AndroidNotificationDetails(
       _emergencyChannel.id,

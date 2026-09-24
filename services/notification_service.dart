@@ -14,20 +14,11 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   debugPrint('🚨 Background Message Received: ${message.messageId}');
 
-  // Bug fix: this used to only log. A background isolate can't reach the
-  // main isolate's in-memory NotificationStore (isolates don't share
-  // memory), so notifications that arrive while the app is backgrounded or
-  // killed -- including when the system suppresses the visible banner
-  // under Do Not Disturb -- never made it into the Notifications page.
-  // NotificationStore's persistence is a plain JSON file on disk keyed by
-  // uid, which (unlike in-memory state) IS shared across isolates, so
-  // loading/writing through the same store class here reaches the same
-  // file the main isolate reads back on next launch.
   try {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return; // No signed-in account to scope this save to.
-
-    await notificationStore.loadForUser(uid);
+    if (uid != null) {
+      await notificationStore.loadForUser(uid);
+    }
 
     final notification = message.notification;
     final String? title = notification?.title?.trim().isNotEmpty == true
@@ -35,25 +26,36 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         : (message.data['title'] as String?)?.trim();
     final String? body = notification?.body?.trim().isNotEmpty == true
         ? notification!.body!.trim()
-        : (message.data['body'] as String?)?.trim();
+        : ((message.data['message'] ?? message.data['body']) as String?)?.trim();
 
     if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
-      // Fully silent data-only push with nothing to show the user --
-      // nothing worth saving to the visible notifications list.
       return;
     }
 
-    final String id = message.messageId ??
-        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}';
+    // Admin broadcast alerts share the 'admin_alert_<id>' id used by the
+    // Notifications page's Firestore/socket listeners, so the same alert
+    // arriving over several channels collapses into one card.
+    final String? alertId = message.data['alertId']?.toString();
+    final String id = (alertId != null && alertId.isNotEmpty)
+        ? 'admin_alert_$alertId'
+        : (message.data['id'] ??
+            message.messageId ??
+            'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
+
+    final bool isAlert = message.data['isAdminAlert'] == 'true' ||
+        message.data.containsKey('alertId') ||
+        (title != null && (title.contains('🚨') || title.toLowerCase().contains('alert') || title.toLowerCase().contains('warning')));
 
     await notificationStore.addOrUpdateAndFlush(
       NotificationItem(
         id: id,
-        title: (title == null || title.isEmpty) ? 'AlertU' : title,
+        title: (title == null || title.isEmpty) ? 'AlertU Emergency' : title,
         description: (body == null || body.isEmpty)
-            ? 'You have a new AlertU update.'
+            ? 'Emergency broadcast update from MDRRMO.'
             : body,
         timestamp: DateTime.now(),
+        isAlert: isAlert,
+        alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
       ),
     );
   } catch (error) {
@@ -64,6 +66,11 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
+
+  /// Admin alert ids that already raised a system notification this
+  /// session, so the same alert arriving over FCM, the socket and the
+  /// Firestore stream only buzzes the phone once.
+  final Set<String> _deviceNotifiedAlertIds = <String>{};
 
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications =
@@ -93,8 +100,112 @@ class NotificationService {
     _setupForegroundHandler();
     await _setupNotificationTapHandlers();
     await getFcmToken();
+    await subscribeToPublicTopics();
 
     _isInitialized = true;
+  }
+
+  /// Subscribes this device to broadcast emergency alert topics
+  Future<void> subscribeToPublicTopics() async {
+    try {
+      await _messaging.subscribeToTopic('all_residents');
+      await _messaging.subscribeToTopic('approved_reports');
+      debugPrint('📢 Successfully subscribed to FCM topics: all_residents, approved_reports');
+    } catch (e) {
+      debugPrint('⚠️ Error subscribing to public topics: $e');
+    }
+  }
+
+  static const List<String> paombongBarangays = [
+    'Poblacion',
+    'San Isidro',
+    'San Jose',
+    'Santo Rosario',
+    'Santo Niño',
+    'San Roque',
+    'Binakod',
+    'Kapitangan',
+    'Malumot',
+    'Masukol',
+    'Pinalagdan',
+    'San Vicente',
+    'Santa Cruz',
+    'Santo Cristo',
+  ];
+
+  /// Detects and extracts the canonical Paombong barangay name from any address or zone string
+  static String? matchPaombongBarangay(String? addressOrZone) {
+    if (addressOrZone == null || addressOrZone.trim().isEmpty) return null;
+    final text = addressOrZone.toLowerCase().replaceAll('ñ', 'n').replaceAll('Ñ', 'n');
+
+    final Map<String, String> lookup = {
+      'poblacion': 'Poblacion',
+      'san isidro': 'San Isidro',
+      'san jose': 'San Jose',
+      'santo rosario': 'Santo Rosario',
+      'sto. rosario': 'Santo Rosario',
+      'sto rosario': 'Santo Rosario',
+      'santo nino': 'Santo Niño',
+      'sto. nino': 'Santo Niño',
+      'sto nino': 'Santo Niño',
+      'san roque': 'San Roque',
+      'binakod': 'Binakod',
+      'kapitangan': 'Kapitangan',
+      'malumot': 'Malumot',
+      'masukol': 'Masukol',
+      'pinalagdan': 'Pinalagdan',
+      'san vicente': 'San Vicente',
+      'santa cruz': 'Santa Cruz',
+      'sta. cruz': 'Santa Cruz',
+      'sta cruz': 'Santa Cruz',
+      'santo cristo': 'Santo Cristo',
+      'sto. cristo': 'Santo Cristo',
+      'sto cristo': 'Santo Cristo',
+    };
+
+    for (final entry in lookup.entries) {
+      if (text.contains(entry.key)) {
+        return entry.value;
+      }
+    }
+    return addressOrZone.trim();
+  }
+
+  /// Normalizes a barangay name to match the server FCM topic format: [a-zA-Z0-9-_.~%]+
+  static String normalizeBarangayTopic(String barangayName) {
+    final matched = matchPaombongBarangay(barangayName) ?? barangayName;
+    final cleaned = matched
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'^(brgy\.?|barangay)\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bsto\.?\s*', caseSensitive: false), 'santo_')
+        .replaceAll(RegExp(r'\bsta\.?\s*', caseSensitive: false), 'santa_')
+        .replaceAll(RegExp(r'[ñÑ]'), 'n')
+        .replaceAll(RegExp(r'[^a-z0-9_-]'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return 'barangay_$cleaned';
+  }
+
+  String? _currentSubscribedBarangayTopic;
+
+  /// Syncs user's barangay topic subscription dynamically
+  Future<void> syncBarangaySubscription(String? barangayName) async {
+    if (barangayName == null || barangayName.trim().isEmpty) return;
+    final newTopic = normalizeBarangayTopic(barangayName);
+    if (newTopic == 'barangay_' || _currentSubscribedBarangayTopic == newTopic) return;
+
+    try {
+      if (_currentSubscribedBarangayTopic != null) {
+        await _messaging.unsubscribeFromTopic(_currentSubscribedBarangayTopic!);
+        debugPrint('🔕 Unsubscribed from previous barangay topic: $_currentSubscribedBarangayTopic');
+      }
+      await _messaging.subscribeToTopic(newTopic);
+      _currentSubscribedBarangayTopic = newTopic;
+      debugPrint('📢 Successfully subscribed to barangay topic: $newTopic');
+    } catch (e) {
+      debugPrint('⚠️ Error syncing barangay topic subscription: $e');
+    }
   }
 
   Future<void> _requestPermission() async {
@@ -144,28 +255,38 @@ class NotificationService {
 
   void _setupForegroundHandler() {
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      debugPrint('📨 Foreground Message Received: ${message.notification?.title}');
+      debugPrint('📨 Foreground Message Received: ${message.notification?.title ?? message.data['title']}');
 
       final notification = message.notification;
-      final android = message.notification?.android;
+      final String title = notification?.title?.trim().isNotEmpty == true
+          ? notification!.title!.trim()
+          : (message.data['title']?.toString().trim() ?? '🚨 Emergency Alert');
 
       final String body = notification?.body?.trim().isNotEmpty == true
           ? notification!.body!.trim()
-          : 'You have a new AlertU update.';
+          : (message.data['message']?.toString().trim() ??
+             message.data['body']?.toString().trim() ??
+             'You have a new AlertU update.');
 
-      if (notification != null && android != null && !kIsWeb) {
-        // showLocalNotification is what actually saves this to the shared
-        // NotificationStore now (see below) -- it's the single funnel
-        // every notification source in the app uses, so saving is done
-        // there once rather than duplicated here. A data-only FCM message
-        // (no `notification` block) never reaches this branch and is
-        // intentionally not added to the visible Notifications page,
-        // matching that it was never shown to the user as a banner either.
+      final bool isAlert = message.data['isAdminAlert'] == 'true' ||
+          message.data.containsKey('alertId') ||
+          title.contains('🚨') ||
+          title.toLowerCase().contains('alert') ||
+          title.toLowerCase().contains('warning');
+
+      if (!kIsWeb) {
         showLocalNotification(
           id: message.hashCode,
-          title: 'AlertU',
+          title: title,
           body: body,
           payload: message.data.toString(),
+          // An admin alert id is not a report id -- passing it as one made
+          // the card try (and fail) to open incident details.
+          alertId: message.data['alertId']?.toString(),
+          reportId: message.data['alertId'] != null
+              ? null
+              : message.data['reportId']?.toString(),
+          isAlertOverride: isAlert,
         );
       }
     });
@@ -181,8 +302,18 @@ class NotificationService {
     required String title,
     required String body,
   }) {
-    final String id = message.messageId ??
-        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}';
+    final String? alertId = message.data['alertId']?.toString();
+    final String id = (alertId != null && alertId.isNotEmpty)
+        ? 'admin_alert_$alertId'
+        : (message.data['id'] ??
+            message.messageId ??
+            'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
+
+    final bool isAlert = message.data['isAdminAlert'] == 'true' ||
+        message.data.containsKey('alertId') ||
+        title.contains('🚨') ||
+        title.toLowerCase().contains('alert') ||
+        title.toLowerCase().contains('warning');
 
     notificationStore.add(
       NotificationItem(
@@ -190,6 +321,8 @@ class NotificationService {
         title: title,
         description: body,
         timestamp: DateTime.now(),
+        isAlert: isAlert,
+        alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
       ),
     );
   }
@@ -234,34 +367,58 @@ class NotificationService {
     required String title,
     required String body,
     String? payload,
+    // Link back to the incident this alert is about, so the Notifications
+    // page can open its live details when the card is tapped.
+    String? reportId,
+    Map<String, dynamic>? reportData,
+    // Set for admin broadcast alerts so a tap opens the Alert Details card
+    // instead of the incident details screen.
+    String? alertId,
+    bool? isAlertOverride,
+    // Pass false when the caller has already saved a richer copy of this
+    // notification to the store (e.g. the Notifications page, which keeps
+    // the alert's details snapshot). Otherwise the store entry below would
+    // overwrite it with a bare one.
+    bool saveToStore = true,
   }) async {
-    // Bug fix: save-to-history now happens unconditionally, before the
-    // areNotificationsEnabled() check below. Previously that check could
-    // return early and skip the notificationStore.addOrUpdate call
-    // entirely -- so if the user's notification preference looked
-    // disabled (or DND suppressed the system banner further down), the
-    // notification never made it into the in-app Notifications list
-    // either, even though it was a real, permanent event that should be
-    // there regardless of whether a banner was shown.
-    //
-    // This is the single funnel every notification source in the app
-    // already calls before showing a system-tray banner -- FCM foreground
-    // messages, nearby-incident proximity alerts, inside/exited
-    // hazard-zone alerts, and approved-report alerts (see
-    // nearbyreports_notifs.dart, insidethereports_notifs.dart,
-    // userexitedreport_notifs.dart, reportnotifs.dart).
-    notificationStore.addOrUpdate(
-      NotificationItem(
-        id: 'local_$id',
-        title: title,
-        description: body,
-        timestamp: DateTime.now(),
-      ),
-    );
-
     if (!await areNotificationsEnabled()) {
-      debugPrint('🔕 System banner suppressed (notifications disabled) -- still saved to history.');
+      debugPrint('🔕 Local notification suppressed because notifications are disabled.');
       return;
+    }
+
+    final bool isAlert = isAlertOverride ??
+        (title.contains('🚨') ||
+         title.toLowerCase().contains('alert') ||
+         title.toLowerCase().contains('warning') ||
+         title.toLowerCase().contains('danger'));
+
+    if (saveToStore) {
+      notificationStore.addOrUpdate(
+        NotificationItem(
+          id: (alertId != null && alertId.isNotEmpty)
+              ? 'admin_alert_$alertId'
+              : (reportId != null ? 'local_$reportId' : 'local_$id'),
+          title: title,
+          description: body,
+          timestamp: DateTime.now(),
+          isAlert: isAlert,
+          reportId: (alertId != null && alertId.isNotEmpty)
+              ? null
+              : (reportId ?? payload),
+          reportData: reportData,
+          alertId: (alertId != null && alertId.isNotEmpty) ? alertId : null,
+        ),
+      );
+    }
+
+    // An admin alert can reach the phone by several routes at once (FCM,
+    // the socket, the Firestore stream). Only the first one raises the
+    // system notification; the rest just refresh the store above.
+    if (alertId != null && alertId.isNotEmpty) {
+      if (!_deviceNotifiedAlertIds.add(alertId)) {
+        debugPrint('🔕 System notification for alert $alertId already shown.');
+        return;
+      }
     }
 
     final androidDetails = AndroidNotificationDetails(
@@ -318,10 +475,12 @@ class NotificationService {
     final notification = message.notification;
     final String title = notification?.title?.trim().isNotEmpty == true
         ? notification!.title!.trim()
-        : 'AlertU';
+        : (message.data['title']?.toString().trim() ?? '🚨 Emergency Alert');
     final String body = notification?.body?.trim().isNotEmpty == true
         ? notification!.body!.trim()
-        : 'You have a new AlertU update.';
+        : (message.data['message']?.toString().trim() ??
+           message.data['body']?.toString().trim() ??
+           'You have a new AlertU update.');
 
     _saveToNotificationStore(message: message, title: title, body: body);
   }

@@ -241,7 +241,6 @@ class _AlertDetailsDialog extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final bg = isDark ? const Color(0xFF1E293B) : Colors.white;
-    final footerBg = isDark ? const Color(0xFF172033) : const Color(0xFFF8FAFC);
     final divider = isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9);
     const labelColor = Color(0xFF94A3B8);
     final strongText = isDark ? Colors.white : const Color(0xFF0F172A);
@@ -344,70 +343,7 @@ class _AlertDetailsDialog extends StatelessWidget {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 18),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: _field('TARGET LOCATION',
-                              details.targetLocation, labelColor, bodyText),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: _field('RECIPIENTS', details.recipients,
-                              labelColor, bodyText),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: _field('AUDIENCE SCOPE', details.audienceScope,
-                              labelColor, bodyText),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: _field('EXPIRES IN', details.expiresIn,
-                              labelColor, bodyText),
-                        ),
-                      ],
-                    ),
                   ],
-                ),
-              ),
-            ),
-
-            // FOOTER
-            Container(
-              color: footerBg,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: strongText,
-                    backgroundColor: bg,
-                    side: BorderSide(
-                      color: isDark
-                          ? const Color(0xFF475569)
-                          : const Color(0xFFE2E8F0),
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 22, vertical: 12),
-                  ),
-                  child: Text(
-                    'Close',
-                    style: GoogleFonts.montserrat(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
                 ),
               ),
             ),
@@ -433,18 +369,6 @@ class _AlertDetailsDialog extends StatelessWidget {
         fontWeight: FontWeight.w600,
         color: color,
       );
-
-  static Widget _field(
-      String label, String value, Color labelColor, Color textColor) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _label(label, labelColor),
-        const SizedBox(height: 6),
-        Text(value.isEmpty ? '—' : value, style: _value(textColor)),
-      ],
-    );
-  }
 }
 
 class _StatusBadge extends StatelessWidget {
