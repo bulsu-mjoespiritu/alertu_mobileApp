@@ -8,6 +8,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:video_player/video_player.dart';
 
 class LiveDetailsHistory extends StatefulWidget {
   final Map<String, dynamic> reportData;
@@ -27,6 +28,11 @@ class _LiveDetailsHistoryState extends State<LiveDetailsHistory> with TickerProv
     'quakeicon.png': '#78350f',
     'warnicon.png': '#f97316'
   };
+
+  static const String _lightMapStyle =
+      'https://tiles.openfreemap.org/styles/liberty';
+  static const String _darkMapStyle =
+      'https://tiles.openfreemap.org/styles/dark';
 
   MapLibreMapController? _mapController;
   bool _styleLoaded = false;
@@ -342,24 +348,29 @@ class _LiveDetailsHistoryState extends State<LiveDetailsHistory> with TickerProv
     final isDark = theme.brightness == Brightness.dark;
     final mediaQuery = MediaQuery.of(context);
 
-    final radiusData = data['radius'];
-    final locationData = data['location'];
-
-    final double lat = radiusData?['centerLat']?.toDouble() ?? locationData?['latitude']?.toDouble() ?? data['latitude']?.toDouble() ?? 14.7925;
-    final double lng = radiusData?['centerLng']?.toDouble() ?? locationData?['longitude']?.toDouble() ?? data['longitude']?.toDouble() ?? 120.8970;
-
     final dynamic rawTimestamp = data['resolvedAt'] ?? data['verifiedAt'] ?? data['createdAt'] ?? data['timestamp'];
     final DateTime? dt = _parseTimestamp(rawTimestamp);
     final String address = data['location']?['address'] ?? data['address'] ?? "No address recorded";
+
+    final radiusData = data['radius'];
+    final locationData = data['location'];
+    final double lat = radiusData?['centerLat']?.toDouble() ?? locationData?['latitude']?.toDouble() ?? data['latitude']?.toDouble() ?? 14.7925;
+    final double lng = radiusData?['centerLng']?.toDouble() ?? locationData?['longitude']?.toDouble() ?? data['longitude']?.toDouble() ?? 120.8970;
 
     final titleColor = isDark ? theme.colorScheme.onSurface : Colors.black;
     final subtitleColor = isDark ? theme.colorScheme.onSurfaceVariant : Colors.grey[700];
     final addressColor = isDark ? theme.colorScheme.primary : Colors.blueGrey;
     final cardColor = isDark ? theme.colorScheme.surfaceContainer : Colors.white;
-    final mapStyle = isDark ? 'https://tiles.openfreemap.org/styles/bright' : 'https://tiles.openfreemap.org/styles/liberty';
     final primaryAccent = isDark ? theme.colorScheme.primary : const Color(0xFF1E3A8A);
 
-    final double responsiveMapHeight = (mediaQuery.size.height * 0.32).clamp(220.0, 320.0);
+    // Privacy: Accident reports stay text-only in the history view -- no
+    // media preview and no embedded map. Every other incident type keeps
+    // both, as before.
+    final String detailsIncidentType =
+    (data['incidentType'] ?? '').toString().trim().toLowerCase();
+    final bool isAccident = detailsIncidentType.contains('accident');
+    final String detailsMediaId =
+    (data['reportId'] ?? data['_id'] ?? data['id'] ?? '').toString();
 
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
@@ -367,6 +378,20 @@ class _LiveDetailsHistoryState extends State<LiveDetailsHistory> with TickerProv
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Banner Image / Video — every incident type except Accident.
+          if (!isAccident) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: _buildMediaPreview(
+                data['mediaUrl']?.toString(),
+                height: 200,
+                isDark: isDark,
+                isSensitive: false,
+                mediaIdentity: detailsMediaId,
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           // Badges Row
           Row(
             children: [
@@ -394,21 +419,28 @@ class _LiveDetailsHistoryState extends State<LiveDetailsHistory> with TickerProv
           ),
           const SizedBox(height: 20),
 
-          // Embedded Map Frame (Primary Visual Component)
-          SizedBox(
-            height: responsiveMapHeight,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: MapLibreMap(
-                styleString: mapStyle,
-                initialCameraPosition: CameraPosition(target: LatLng(lat, lng), zoom: 14.5),
-                onMapCreated: _onMapCreated,
-                onStyleLoadedCallback: () => _onStyleLoaded(data),
-                myLocationEnabled: false,
+          // Embedded Map — every incident type except Accident.
+          if (!isAccident) ...[
+            SizedBox(
+              height: 220,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: MapLibreMap(
+                  styleString: isDark ? _darkMapStyle : _lightMapStyle,
+                  initialCameraPosition: CameraPosition(target: LatLng(lat, lng), zoom: 15.0),
+                  onMapCreated: _onMapCreated,
+                  onStyleLoadedCallback: () => _onStyleLoaded(data),
+                  myLocationEnabled: false,
+                  zoomGesturesEnabled: false,
+                  scrollGesturesEnabled: false,
+                  rotateGesturesEnabled: false,
+                  tiltGesturesEnabled: false,
+                  doubleClickZoomEnabled: false,
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 24),
+            const SizedBox(height: 20),
+          ],
 
           // Description Header & Card
           Text(
@@ -443,6 +475,50 @@ class _LiveDetailsHistoryState extends State<LiveDetailsHistory> with TickerProv
     );
   }
 
+  Widget _buildMediaPreview(
+      String? mediaUrl, {
+        required double height,
+        required bool isDark,
+        required bool isSensitive,
+        required String mediaIdentity,
+      }) {
+    final String? url = mediaUrl?.trim();
+    final bool isVideo = url != null &&
+        url.isNotEmpty &&
+        (url.toLowerCase().contains('.mp4') || url.toLowerCase().contains('video/'));
+
+    final Widget mediaChild;
+    if (!isVideo) {
+      mediaChild = Image.network(
+        url ?? '',
+        height: height,
+        width: double.infinity,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            height: height,
+            color: isDark ? Theme.of(context).colorScheme.surfaceContainerHighest : Colors.grey[200],
+            alignment: Alignment.center,
+            child: Icon(
+              Icons.image_not_supported_outlined,
+              size: 50,
+              color: isDark ? Colors.grey.shade400 : Colors.grey,
+            ),
+          );
+        },
+      );
+    } else {
+      mediaChild = _HistoryVideoPreview(videoUrl: url, height: height, isDark: isDark);
+    }
+
+    return _SensitiveHistoryMediaPreview(
+      height: height,
+      isSensitive: isSensitive,
+      mediaIdentity: mediaIdentity,
+      child: mediaChild,
+    );
+  }
+
   Widget _buildTag(String text, Color textColor, {Color? bgColor}) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
     decoration: BoxDecoration(
@@ -459,4 +535,299 @@ class _LiveDetailsHistoryState extends State<LiveDetailsHistory> with TickerProv
       ),
     ),
   );
+}
+
+class _SensitiveHistoryMediaPreview extends StatefulWidget {
+  final double height;
+  final bool isSensitive;
+  final String mediaIdentity;
+  final Widget child;
+
+  const _SensitiveHistoryMediaPreview({
+    required this.height,
+    required this.isSensitive,
+    required this.mediaIdentity,
+    required this.child,
+  });
+
+  @override
+  State<_SensitiveHistoryMediaPreview> createState() => _SensitiveHistoryMediaPreviewState();
+}
+
+class _SensitiveHistoryMediaPreviewState extends State<_SensitiveHistoryMediaPreview> {
+  bool _isRevealed = false;
+
+  @override
+  void didUpdateWidget(covariant _SensitiveHistoryMediaPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.mediaIdentity != widget.mediaIdentity ||
+        oldWidget.isSensitive != widget.isSensitive) {
+      _isRevealed = false;
+    }
+  }
+
+  void _reveal() {
+    if (!widget.isSensitive || _isRevealed) return;
+    setState(() => _isRevealed = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool showCensor = widget.isSensitive && !_isRevealed;
+
+    return SizedBox(
+      height: widget.height,
+      width: double.infinity,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          widget.child,
+          if (widget.isSensitive)
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: !showCensor,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: showCensor ? _reveal : null,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 420),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    layoutBuilder: (currentChild, previousChildren) {
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          ...previousChildren,
+                          if (currentChild != null) currentChild,
+                        ],
+                      );
+                    },
+                    child: showCensor
+                        ? Container(
+                      key: const ValueKey('history-sensitive-overlay'),
+                      color: Colors.black.withOpacity(0.48),
+                      child: BackdropFilter(
+                        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                        child: Container(
+                          color: Colors.black.withOpacity(0.18),
+                          alignment: Alignment.center,
+                          child: const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.visibility_off_rounded,
+                                color: Colors.white,
+                                size: 30,
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Sensitive content',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                'Tap to view',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    )
+                        : const SizedBox.expand(
+                      key: ValueKey('history-sensitive-revealed'),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HistoryVideoPreview extends StatefulWidget {
+  final String videoUrl;
+  final double height;
+  final bool isDark;
+
+  const _HistoryVideoPreview({
+    required this.videoUrl,
+    required this.height,
+    required this.isDark,
+  });
+
+  @override
+  State<_HistoryVideoPreview> createState() => _HistoryVideoPreviewState();
+}
+
+class _HistoryVideoPreviewState extends State<_HistoryVideoPreview> {
+  VideoPlayerController? _controller;
+  bool _hasFailed = false;
+  bool _isPlaying = false;
+  bool _hasFinished = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeVideo();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HistoryVideoPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoUrl != widget.videoUrl) {
+      _initializeVideo();
+    }
+  }
+
+  Future<void> _initializeVideo() async {
+    final previousController = _controller;
+    _controller = null;
+    _hasFailed = false;
+    _isPlaying = false;
+    _hasFinished = false;
+    await previousController?.dispose();
+
+    final controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
+    try {
+      await controller.initialize();
+      await controller.setLooping(false);
+      controller.addListener(_handleVideoProgress);
+      await controller.play();
+
+      if (!mounted) {
+        controller.removeListener(_handleVideoProgress);
+        await controller.dispose();
+        return;
+      }
+
+      setState(() {
+        _controller = controller;
+        _isPlaying = true;
+      });
+    } catch (error) {
+      debugPrint('❌ Report history video initialization failed: $error');
+      controller.removeListener(_handleVideoProgress);
+      await controller.dispose();
+      if (mounted) setState(() => _hasFailed = true);
+    }
+  }
+
+  void _handleVideoProgress() {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final value = controller.value;
+    if (value.duration == Duration.zero) return;
+
+    if (value.position >= value.duration && !value.isPlaying) {
+      if (!mounted) return;
+      setState(() {
+        _isPlaying = false;
+        _hasFinished = true;
+      });
+    }
+  }
+
+  Future<void> _replayVideo() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    if (_hasFinished || controller.value.position >= controller.value.duration) {
+      await controller.seekTo(Duration.zero);
+    }
+    await controller.play();
+    if (mounted) {
+      setState(() {
+        _isPlaying = true;
+        _hasFinished = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.removeListener(_handleVideoProgress);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+
+    if (_hasFailed) {
+      return Container(
+        height: widget.height,
+        color: widget.isDark ? const Color(0xFF1E293B) : Colors.grey[200],
+        alignment: Alignment.center,
+        child: Icon(
+          Icons.video_library_outlined,
+          size: 50,
+          color: widget.isDark ? Colors.grey.shade400 : Colors.grey,
+        ),
+      );
+    }
+
+    if (controller == null || !controller.value.isInitialized) {
+      return SizedBox(
+        height: widget.height,
+        child: Container(
+          color: widget.isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+          alignment: Alignment.center,
+          child: const CircularProgressIndicator(
+            color: Color(0xFF2563EB),
+            strokeWidth: 2.5,
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: widget.height,
+      width: double.infinity,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _isPlaying ? null : _replayVideo,
+        child: Stack(
+          fit: StackFit.expand,
+          alignment: Alignment.center,
+          children: [
+            FittedBox(
+              fit: BoxFit.cover,
+              clipBehavior: Clip.hardEdge,
+              child: SizedBox(
+                width: controller.value.size.width,
+                height: controller.value.size.height,
+                child: VideoPlayer(controller),
+              ),
+            ),
+            if (!_isPlaying)
+              Center(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.60),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Icon(Icons.replay_rounded, color: Colors.white, size: 28),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

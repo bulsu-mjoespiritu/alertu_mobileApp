@@ -51,6 +51,12 @@ class NearbyReportsNotifService {
     final nextReports = <_ReportGeometry>[];
 
     for (final report in reports) {
+      // PRIVACY: belt-and-suspenders guard -- homepage already excludes
+      // Accident reports before they ever reach this service, but this
+      // service has no way to know if a future caller forgets that, so it
+      // never raises a "you're near an incident" alert for one either way.
+      if (_isAccidentReport(report)) continue;
+
       final geometry = _parseReport(report);
       if (geometry != null) nextReports.add(geometry);
     }
@@ -124,6 +130,18 @@ class NearbyReportsNotifService {
       debugPrint('❌ Nearby notification failed for ${report.id}: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
+  }
+
+  bool _isAccidentReport(Map<String, dynamic> report) {
+    final String type = (report['incidentType'] ??
+        report['verifiedIncidentType'] ??
+        report['type'] ??
+        report['hazard'] ??
+        report['category'] ??
+        '')
+        .toString()
+        .toLowerCase();
+    return type.contains('accident');
   }
 
   _ReportGeometry? _parseReport(Map<String, dynamic> report) {

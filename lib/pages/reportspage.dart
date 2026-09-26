@@ -80,7 +80,7 @@ class _ReportsPageState extends State<ReportsPage>
     final double keyboardInset =
         WidgetsBinding.instance.platformDispatcher.views.first.viewInsets
             .bottom /
-        WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+            WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
 
     final bool keyboardJustClosed =
         _lastKeyboardInset > 0 && keyboardInset <= 0;
@@ -195,6 +195,17 @@ class _ReportsPageState extends State<ReportsPage>
           return timeB.compareTo(timeA);
         });
 
+        // Privacy fix: an Accident-type report is only ever visible to the
+        // citizen who filed it. Every other type stays visible to everyone
+        // in the global "Unresolved Reports" list, same as before.
+        final String? currentUid = FirebaseAuth.instance.currentUser?.uid;
+        fetchedList = fetchedList.where((r) {
+          final String type = (r['incidentType'] ?? '').toString().toLowerCase();
+          if (!type.contains('accident')) return true;
+          final String reportUid = (r['authUid'] ?? r['citizenID'] ?? r['citizenId'] ?? r['uid'] ?? '').toString();
+          return currentUid != null && reportUid == currentUid;
+        }).toList();
+
         if (!mounted) return;
         setState(() {
           _approvedReports = fetchedList;
@@ -289,9 +300,9 @@ class _ReportsPageState extends State<ReportsPage>
       for (final local in myReportsStore.submissions.value) {
         final localReport = Map<String, dynamic>.from(local);
         final String localStatus =
-            (localReport['localStatus'] as String?)?.trim().isNotEmpty == true
-                ? (localReport['localStatus'] as String).trim()
-                : 'Pending';
+        (localReport['localStatus'] as String?)?.trim().isNotEmpty == true
+            ? (localReport['localStatus'] as String).trim()
+            : 'Pending';
         absorb(localReport, localStatus, 0);
       }
 
@@ -831,7 +842,6 @@ class _ReportsPageState extends State<ReportsPage>
     final isDark = theme.brightness == Brightness.dark;
 
     final scaffoldBg = theme.scaffoldBackgroundColor;
-    final appBarBg = theme.appBarTheme.backgroundColor ?? (isDark ? const Color(0xFF121212) : Colors.white);
     final titleTextColor = theme.textTheme.titleLarge?.color ?? (isDark ? Colors.white : const Color(0xFF1E293B));
 
     final inputFillColor = isDark ? const Color(0xFF1E293B) : Colors.white;
@@ -839,6 +849,16 @@ class _ReportsPageState extends State<ReportsPage>
     final inputHintColor = isDark ? Colors.grey.shade400 : const Color(0xFF94A3B8);
 
     final tabContainerBg = isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9);
+
+    // Responsive metrics -- phones vs tablets, plus extra breathing room on
+    // very wide tablets. Mirrors the spacing the Notifications page already
+    // uses so both headers feel consistent.
+    final Size screenSize = MediaQuery.of(context).size;
+    final bool isTablet = screenSize.shortestSide >= 600;
+    final bool isWideTablet = screenSize.shortestSide >= 900;
+    final double horizontalPad = isWideTablet ? 32.0 : (isTablet ? 24.0 : 16.0);
+    final double titleTopPad = isTablet ? 20.0 : 16.0;
+    final double titleFontSize = isTablet ? 24.0 : 20.0;
 
     // Multi-criteria Filter Logic
     final List<dynamic> filteredReports = _approvedReports.where((report) {
@@ -902,25 +922,38 @@ class _ReportsPageState extends State<ReportsPage>
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            SliverAppBar(
-              backgroundColor: appBarBg,
-              elevation: 0,
-              floating: true,
-              title: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text("Incident Reports", style: _textStyle(fontSize: 18, fontWeight: FontWeight.w700, color: titleTextColor)),
-                  const SizedBox(width: 8),
-                  Image.asset('assets/images/logo1.png', height: 28, errorBuilder: (_, __, ___) => const SizedBox.shrink()),
-                ],
+            // Title -- wrapped in SafeArea so it always clears the status
+            // bar. A SliverAppBar here sits inside Homepage's IndexedStack,
+            // which can skip normal status-bar spacing entirely; a plain
+            // SafeArea + Padding sliver doesn't have that problem, the same
+            // fix the Notifications page already uses.
+            SliverToBoxAdapter(
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(horizontalPad, titleTopPad, horizontalPad, 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          "Incident Reports",
+                          style: _textStyle(fontSize: titleFontSize, fontWeight: FontWeight.w800, color: titleTextColor),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Image.asset('assets/images/logo1.png', height: 28, errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+                    ],
+                  ),
+                ),
               ),
-              centerTitle: false,
             ),
 
             // Shortened Search Bar + Filter Button
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
+                padding: EdgeInsets.symmetric(horizontal: horizontalPad, vertical: 4),
                 child: Row(
                   children: [
                     Expanded(
@@ -997,7 +1030,7 @@ class _ReportsPageState extends State<ReportsPage>
             // Tab Selector
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.all(16.0),
+                padding: EdgeInsets.symmetric(horizontal: horizontalPad, vertical: 16.0),
                 child: Container(
                   height: 46,
                   padding: const EdgeInsets.all(3),
@@ -1017,7 +1050,7 @@ class _ReportsPageState extends State<ReportsPage>
             if (_selectedTabIndex == 1)
               SliverToBoxAdapter(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  padding: EdgeInsets.symmetric(horizontal: horizontalPad),
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 300),
                     child: _isLoading
@@ -1283,6 +1316,12 @@ class _ReportsPageState extends State<ReportsPage>
     final String severity = (report['severity'] ?? 'LOW').toUpperCase();
     final String typeLower = hazardType.toLowerCase();
 
+    // Privacy: Accident reports never show a media preview -- every other
+    // incident type keeps its banner image/video as before.
+    final bool isAccident = typeLower.contains('accident');
+    final String reportMediaId =
+    (report['reportId'] ?? report['_id'] ?? report['id'] ?? '').toString();
+
     final dynamic rawTime = isMyReport
         ? _myReportTimestamp(report)
         : (report['verifiedAt'] ?? report['createdAt'] ?? report['timestamp']);
@@ -1360,87 +1399,78 @@ class _ReportsPageState extends State<ReportsPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Banner Image Header
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                ClipRRect(
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                  child: _buildMediaPreview(
-                    report['mediaUrl'],
-                    "https://images.unsplash.com/photo-1547683905-f686c993aae5?auto=format&fit=crop&q=80&w=600",
-                    isDark,
-                    isSensitive: report['isSensitive'] == true,
-                    mediaIdentity: '${report['_id'] ?? report['id'] ?? ''}_${report['mediaUrl'] ?? ''}',
-                  ),
+          // Banner Image/Video Header — every incident type except
+          // Accident. Accident reports stay private and text-only, with no
+          // media preview on the card.
+          if (!isAccident)
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _buildMediaPreview(
+                  report['mediaUrl']?.toString(),
+                  '',
+                  isDark,
+                  isSensitive: false,
+                  mediaIdentity: reportMediaId,
                 ),
-                Positioned(
-                  top: 10,
-                  left: 10,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(color: sevColor, borderRadius: BorderRadius.circular(6)),
-                        child: Text(
-                          "$severity SEVERITY",
-                          style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
-                        ),
-                      ),
-                      // "My Reports" keeps a report through every status, so
-                      // each card states where it currently stands.
-                      if (isMyReport) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: myStatusColor,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            myStatusLabel,
-                            style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-
-                // Per-report "clear" control -- My Reports only. Removes
-                // this one entry from the citizen's personal list; the
-                // report itself is untouched and still appears under
-                // "Report History".
-                if (isMyReport)
-                  Positioned(
-                    top: 8,
-                    right: 8,
-                    child: Material(
-                      color: Colors.black.withOpacity(0.45),
-                      shape: const CircleBorder(),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => _confirmClearMyReport(report),
-                        child: const Padding(
-                          padding: EdgeInsets.all(5.0),
-                          child: Icon(Icons.close_rounded, size: 15, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
-          ),
-
           // Content Container
           Padding(
             padding: const EdgeInsets.all(14.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Severity + My-Report Status badges, and the clear button
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(color: sevColor, borderRadius: BorderRadius.circular(6)),
+                      child: Text(
+                        "$severity SEVERITY",
+                        style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
+                      ),
+                    ),
+                    // "My Reports" keeps a report through every status, so
+                    // each card states where it currently stands.
+                    if (isMyReport) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: myStatusColor,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          myStatusLabel,
+                          style: _textStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                    const Spacer(),
+                    // Per-report "clear" control -- My Reports only. Removes
+                    // this one entry from the citizen's personal list; the
+                    // report itself is untouched and still appears under
+                    // "Report History".
+                    if (isMyReport)
+                      Material(
+                        color: Colors.transparent,
+                        shape: const CircleBorder(),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: () => _confirmClearMyReport(report),
+                          child: Padding(
+                            padding: const EdgeInsets.all(4.0),
+                            child: Icon(Icons.close_rounded, size: 18, color: cardDescColor),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
                 // Hazard Tag & Time Timestamp
                 Row(
                   children: [
@@ -1595,11 +1625,16 @@ class _ReportsPageState extends State<ReportsPage>
             child: Container(color: baseColor),
           );
         },
-        errorBuilder: (_, __, ___) => Image.network(
-          fallback,
-          fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
           width: double.infinity,
           height: double.infinity,
+          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+          alignment: Alignment.center,
+          child: Icon(
+            Icons.image_not_supported_outlined,
+            size: 40,
+            color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+          ),
         ),
       );
     }
@@ -1837,11 +1872,16 @@ class _ReportVideoPreviewState extends State<_ReportVideoPreview> {
     final controller = _controller;
 
     if (_hasFailed) {
-      return Image.network(
-        widget.fallbackImageUrl,
-        fit: BoxFit.cover,
+      return Container(
         width: double.infinity,
         height: double.infinity,
+        color: widget.isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+        alignment: Alignment.center,
+        child: Icon(
+          Icons.videocam_off_outlined,
+          size: 40,
+          color: widget.isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+        ),
       );
     }
 

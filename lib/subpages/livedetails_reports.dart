@@ -37,6 +37,11 @@ class _LiveDetailsReportsState extends State<LiveDetailsReports> with TickerProv
     'warnicon.png': '#f97316'
   };
 
+  static const String _lightMapStyle =
+      'https://tiles.openfreemap.org/styles/liberty';
+  static const String _darkMapStyle =
+      'https://tiles.openfreemap.org/styles/dark';
+
   MapLibreMapController? _mapController;
   bool _styleLoaded = false;
   bool _isPulseLayerRendered = false;
@@ -371,10 +376,16 @@ class _LiveDetailsReportsState extends State<LiveDetailsReports> with TickerProv
     final subtitleColor = isDark ? theme.colorScheme.onSurfaceVariant : Colors.grey[700];
     final addressColor = isDark ? theme.colorScheme.primary : Colors.blueGrey;
     final cardColor = isDark ? theme.colorScheme.surfaceContainer : Colors.white;
-    final mapStyle = isDark ? 'https://tiles.openfreemap.org/styles/bright' : 'https://tiles.openfreemap.org/styles/liberty';
     final primaryAccent = isDark ? theme.colorScheme.primary : const Color(0xFF1E3A8A);
 
-    final double responsiveMapHeight = (mediaQuery.size.height * 0.26).clamp(180.0, 260.0);
+    // Privacy: Accident reports stay text-only in the details view -- no
+    // media preview and no embedded map. Every other incident type keeps
+    // both, as before.
+    final String detailsIncidentType =
+    (data['incidentType'] ?? '').toString().trim().toLowerCase();
+    final bool isAccident = detailsIncidentType.contains('accident');
+    final String detailsMediaId =
+    (data['reportId'] ?? data['_id'] ?? data['id'] ?? '').toString();
 
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
@@ -382,20 +393,20 @@ class _LiveDetailsReportsState extends State<LiveDetailsReports> with TickerProv
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Banner Image / Video
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: _buildMediaPreview(
-              data['mediaUrl']?.toString(),
-              height: (mediaQuery.size.height * 0.28).clamp(180.0, 280.0),
-              isDark: isDark,
-              isSensitive: data['isSensitive'] == true,
-              mediaIdentity: '${data['_id'] ?? data['id'] ?? ''}_${data['mediaUrl'] ?? ''}',
+          // Banner Image / Video — every incident type except Accident.
+          if (!isAccident) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: _buildMediaPreview(
+                data['mediaUrl']?.toString(),
+                height: 200,
+                isDark: isDark,
+                isSensitive: false,
+                mediaIdentity: detailsMediaId,
+              ),
             ),
-          ),
-
-          const SizedBox(height: 16),
-
+            const SizedBox(height: 16),
+          ],
           // Badges
           Row(
             children: [
@@ -423,21 +434,28 @@ class _LiveDetailsReportsState extends State<LiveDetailsReports> with TickerProv
           ),
           const SizedBox(height: 20),
 
-          // Embedded Map Frame
-          SizedBox(
-            height: responsiveMapHeight,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: MapLibreMap(
-                styleString: mapStyle,
-                initialCameraPosition: CameraPosition(target: LatLng(lat, lng), zoom: 14.5),
-                onMapCreated: _onMapCreated,
-                onStyleLoadedCallback: () => _onStyleLoaded(data),
-                myLocationEnabled: false,
+          // Embedded Map — every incident type except Accident.
+          if (!isAccident) ...[
+            SizedBox(
+              height: 220,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: MapLibreMap(
+                  styleString: isDark ? _darkMapStyle : _lightMapStyle,
+                  initialCameraPosition: CameraPosition(target: LatLng(lat, lng), zoom: 15.0),
+                  onMapCreated: _onMapCreated,
+                  onStyleLoadedCallback: () => _onStyleLoaded(data),
+                  myLocationEnabled: false,
+                  zoomGesturesEnabled: false,
+                  scrollGesturesEnabled: false,
+                  rotateGesturesEnabled: false,
+                  tiltGesturesEnabled: false,
+                  doubleClickZoomEnabled: false,
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 24),
+            const SizedBox(height: 20),
+          ],
 
           // Description Header & Card
           Text("Description", style: GoogleFonts.montserrat(fontWeight: FontWeight.w900, fontSize: 16, color: titleColor)),
@@ -465,59 +483,62 @@ class _LiveDetailsReportsState extends State<LiveDetailsReports> with TickerProv
 
           const SizedBox(height: 24),
 
-          // Action Buttons
-          Column(
-            children: [
-              _buildButton(
-                "View on Map",
-                Icons.navigation,
-                primaryAccent,
-                Colors.white,
-                onTap: () {
-                  // Return the selected report to Homepage for map centering
-                  // and report-card presentation.
-                  final selected = Map<String, dynamic>.from(data);
-                  LiveDetailsReports.selectedReportForMap = selected;
-                  LiveDetailsReports.selectedReportForMapNotifier.value = selected;
+          // Action Buttons -- Accident reports are never shown on the map
+          // (public map and admin map both exclude them for privacy), so
+          // there's nothing to view or open here for that type.
+          if (!isAccident)
+            Column(
+              children: [
+                _buildButton(
+                  "View on Map",
+                  Icons.navigation,
+                  primaryAccent,
+                  Colors.white,
+                  onTap: () {
+                    // Return the selected report to Homepage for map centering
+                    // and report-card presentation.
+                    final selected = Map<String, dynamic>.from(data);
+                    LiveDetailsReports.selectedReportForMap = selected;
+                    LiveDetailsReports.selectedReportForMapNotifier.value = selected;
 
-                  // Return through the existing route stack. Homepage remains
-                  // mounted, so its MapLibre map is not recreated or reloaded.
-                  Navigator.of(context).popUntil((route) => route.isFirst);
-                },
+                    // Return through the existing route stack. Homepage remains
+                    // mounted, so its MapLibre map is not recreated or reloaded.
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  },
 
-              ),
-              const SizedBox(height: 12),
-              _buildButton(
-                "Open in Google Maps",
-                Icons.map,
-                Colors.transparent,
-                titleColor,
-                bordered: true,
-                leading: Image.asset(
-                  'images/googleicon.png',
-                  width: 22,
-                  height: 22,
-                  fit: BoxFit.contain,
                 ),
-                onTap: () async {
-                  final opened = await launchUrl(
-                    googleMapsUri,
-                    mode: LaunchMode.externalApplication,
-                  );
-
-                  if (!opened && mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Unable to open Google Maps on this device.'),
-                        behavior: SnackBarBehavior.floating,
-                      ),
+                const SizedBox(height: 12),
+                _buildButton(
+                  "Open in Google Maps",
+                  Icons.map,
+                  Colors.transparent,
+                  titleColor,
+                  bordered: true,
+                  leading: Image.asset(
+                    'images/googleicon.png',
+                    width: 22,
+                    height: 22,
+                    fit: BoxFit.contain,
+                  ),
+                  onTap: () async {
+                    final opened = await launchUrl(
+                      googleMapsUri,
+                      mode: LaunchMode.externalApplication,
                     );
-                  }
-                },
-              ),
 
-            ],
-          ),
+                    if (!opened && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Unable to open Google Maps on this device.'),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    }
+                  },
+                ),
+
+              ],
+            ),
 
           SizedBox(height: mediaQuery.padding.bottom + 24),
         ],

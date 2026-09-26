@@ -367,7 +367,12 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     QuickReportBridge.registerCameraTrigger(_openReportFromTile);
 
     _setupSocketDeactivationListener();
-    _setupIncidentNotificationSocketListener();
+    // PRIVACY: previously wired up live socket updates that pushed newly
+    // approved/verified citizen reports straight onto the public map. Citizen
+    // reports must never appear on the map (pending or verified), so this is
+    // no longer called. Per-reporter notifications are handled separately by
+    // the dedicated notification services and are unaffected.
+    // _setupIncidentNotificationSocketListener();
 
     LiveDetailsReports.selectedReportForMapNotifier.addListener(
       _onSelectedReportForMapChanged,
@@ -611,6 +616,12 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
         // Verify report status is approved or verified
         final String status = (newReport['status'] ?? newReport['verificationStatus'] ?? 'approved').toString().toLowerCase();
         if (status != 'approved' && status != 'verified') return;
+
+        // PRIVACY: an Accident-type report never gets pushed onto the public
+        // map live, same as the initial fetch above. Every other incident
+        // type still pops in as usual.
+        final String incomingType = (newReport['incidentType'] ?? newReport['type'] ?? '').toString().toLowerCase();
+        if (incomingType.contains('accident')) return;
 
         final String reportId = (newReport['_id'] ?? newReport['id'] ?? '').toString();
 
@@ -1371,12 +1382,27 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
       // ------------------------------------------------
 
       if (response.statusCode == 200 && mounted && !_isAccountDisabledChecked) {
+        List<dynamic> fetchedList = [];
+        if (resData is Map && resData.containsKey('data')) {
+          fetchedList = resData['data'];
+        } else if (resData is List) {
+          fetchedList = resData;
+        }
+
+        // PRIVACY: an Accident-type report must NEVER appear as a pin on the
+        // public map -- it stays visible only to the original submitter, in
+        // the "My Reports" tab. Every other incident type (Fire, Flood,
+        // Earthquake, Others) still shows normally for everyone. The
+        // reporter is still notified privately once verified -- that is
+        // handled entirely by the dedicated notification services, which
+        // are untouched by this change.
+        fetchedList = fetchedList.where((r) {
+          final String type = (r['incidentType'] ?? r['type'] ?? '').toString().toLowerCase();
+          return !type.contains('accident');
+        }).toList();
+
         setState(() {
-          if (resData is Map && resData.containsKey('data')) {
-            _incidentReports = List<Map<String, dynamic>>.from(resData['data']);
-          } else if (resData is List) {
-            _incidentReports = List<Map<String, dynamic>>.from(resData);
-          }
+          _incidentReports = fetchedList;
         });
 
         _syncIncidentNotificationReports();
@@ -1516,6 +1542,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
       if (iconFile == 'fireicon.png') pulseType = 'fire';
       else if (iconFile == 'floodicon.png') pulseType = 'flood';
       else if (iconFile == 'accicon.png' || iconFile == 'caricon.png') pulseType = 'accident';
+      else if (iconFile == 'quakeicon.png') pulseType = 'quake';
 
       geoJsonFeatures.add({
         'type': 'Feature',
@@ -1572,7 +1599,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
             "incident-symbols-source",
             "incident-pulse-layer",
             const CircleLayerProperties(
-              circleColor: ["match", ["get", "pulseType"], "fire", "#ef4444", "flood", "#3b82f6", "accident", "#eab308", "others", "#f97316", "#f97316"],
+              circleColor: ["match", ["get", "pulseType"], "fire", "#ef4444", "flood", "#3b82f6", "accident", "#eab308", "quake", "#78350f", "others", "#f97316", "#f97316"],
               circlePitchAlignment: "map",
               circleStrokeWidth: 0.0,
             ),
@@ -1937,11 +1964,11 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                   context: context,
                   removeBottom: true,
                   child: Offstage(
-                  offstage: _currentIndex == kNavPageHome,
-                  child: Container(
-                    color: const Color(0xFFF8FAFC),
-                    child: IndexedStack(index: _currentIndex, children: _pages),
-                  ),
+                    offstage: _currentIndex == kNavPageHome,
+                    child: Container(
+                      color: const Color(0xFFF8FAFC),
+                      child: IndexedStack(index: _currentIndex, children: _pages),
+                    ),
                   ),
                 ),
               ),
@@ -2130,12 +2157,12 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                   context: context,
                   removeBottom: true,
                   child: SwitchToNavbar(
-                  child: CustomNavigationBar(
-                    currentIndex: _currentIndex,
-                    onTap: _onItemTapped,
-                    onReportPressed: _handleReportIncident,
-                    isReportLoading: _isLoadingLocation,
-                  ),
+                    child: CustomNavigationBar(
+                      currentIndex: _currentIndex,
+                      onTap: _onItemTapped,
+                      onReportPressed: _handleReportIncident,
+                      isReportLoading: _isLoadingLocation,
+                    ),
                   ),
                 ),
               ),
