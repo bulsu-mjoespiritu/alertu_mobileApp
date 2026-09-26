@@ -301,7 +301,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
     // back to Bulacan if permission is denied or the device can't get a
     // fix in time.
     final libre.LatLng initial =
-        _hasLocation ? libre.LatLng(_currentLatitude!, _currentLongitude!) : await _resolveDeviceLocationOrFallback();
+    _hasLocation ? libre.LatLng(_currentLatitude!, _currentLongitude!) : await _resolveDeviceLocationOrFallback();
 
     if (!mounted) return;
 
@@ -977,7 +977,7 @@ class _ReportSubmissionPageState extends ConsumerState<ReportSubmissionPage> {
                         spacing: 8,
                         runSpacing: 8,
                         children:
-                        ['Fire', 'Flood', 'Accident', 'Others'].map((type) {
+                        ['Fire', 'Flood', 'Accident', 'Earthquake', 'Others'].map((type) {
                           final isSelected = _selectedIncident == type;
                           return ChoiceChip(
                             label: Text(type),

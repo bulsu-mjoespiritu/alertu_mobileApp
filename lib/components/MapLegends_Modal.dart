@@ -95,6 +95,15 @@ class MapLegendsModal extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   _buildLegendChip(
+                    label: 'Earthquake',
+                    assetPath: 'images/markerlegends/quakemap.png',
+                    bgColor: isDark ? const Color(0x4D78350F) : const Color(0x3378350F),
+                    borderColor: const Color(0xFF78350F),
+                    textColor: chipTextColor,
+                    fontFamily: 'Inter',
+                  ),
+                  const SizedBox(width: 8),
+                  _buildLegendChip(
                     label: 'Others',
                     assetPath: 'images/markerlegends/warnmap.png',
                     bgColor: isDark ? const Color(0x4DC2410C) : const Color(0x33F97316),
