@@ -68,39 +68,29 @@ class CenterandFixTheViewIncidents {
     }
   }
 
-  static Future<Position> getSafeUserPositionFallback() async {
+  /// Attempts to get the user's real position. Returns `null` — never a
+  /// made-up coordinate — when location services are off, permission is
+  /// denied, or the fix otherwise fails. Callers must treat `null` as "we
+  /// don't know where the user is" and avoid drawing a "you are here"
+  /// marker or moving the camera to a guessed location.
+  static Future<Position?> getSafeUserPositionFallback() async {
     try {
       bool isLocationServiceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!isLocationServiceEnabled) return _getDefaultBulacanFallback();
+      if (!isLocationServiceEnabled) return null;
 
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return _getDefaultBulacanFallback();
+        if (permission == LocationPermission.denied) return null;
       }
-      if (permission == LocationPermission.deniedForever) return _getDefaultBulacanFallback();
+      if (permission == LocationPermission.deniedForever) return null;
 
       return await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 4),
       );
     } catch (_) {
-      return _getDefaultBulacanFallback();
+      return null;
     }
-  }
-
-  static Position _getDefaultBulacanFallback() {
-    return Position(
-      latitude: 14.7925,
-      longitude: 120.8970,
-      timestamp: DateTime.now(),
-      accuracy: 0.0,
-      altitude: 0.0,
-      heading: 0.0,
-      speed: 0.0,
-      speedAccuracy: 0.0,
-      altitudeAccuracy: 0.0,
-      headingAccuracy: 0.0,
-    );
   }
 }

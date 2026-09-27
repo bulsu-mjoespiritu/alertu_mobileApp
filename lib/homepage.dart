@@ -32,6 +32,11 @@ import 'components/Search_Bar.dart';
 import 'components/SummaryReport_Button.dart';
 import 'components/UserPinpoint_Button.dart';
 import 'components/IsThisYourLocation.dart';
+// Aliased: shares the class name `CenterandFixTheViewIncidents` with the
+// local copy still defined below (kept for its focusCameraOnIncident
+// override). Only the position-fallback helper is consumed from here now,
+// so the fake-coordinate fallback lives in exactly one place.
+import 'components/CenterandFix_TheView_Incidents.dart' as location_fallback;
 import 'package:alertu_flutter/disable_modal.dart';
 import 'package:alertu_flutter/app_navigator.dart';
 
@@ -108,42 +113,6 @@ class CenterandFixTheViewIncidents {
       duration: const Duration(milliseconds: 600),
     );
   }
-
-  static Future<Position> getSafeUserPositionFallback() async {
-    try {
-      bool isLocationServiceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!isLocationServiceEnabled) return _getDefaultBulacanFallback();
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return _getDefaultBulacanFallback();
-      }
-      if (permission == LocationPermission.deniedForever) return _getDefaultBulacanFallback();
-
-      return await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 4),
-      );
-    } catch (_) {
-      return _getDefaultBulacanFallback();
-    }
-  }
-
-  static Position _getDefaultBulacanFallback() {
-    return Position(
-      latitude: 14.7925,
-      longitude: 120.8970,
-      timestamp: DateTime.now(),
-      accuracy: 0.0,
-      altitude: 0.0,
-      heading: 0.0,
-      speed: 0.0,
-      speedAccuracy: 0.0,
-      altitudeAccuracy: 0.0,
-      headingAccuracy: 0.0,
-    );
-  }
 }
 
 // =========================================================================
@@ -181,6 +150,12 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
   Position? _currentPosition;
   bool _isRecentering = false;
   bool _isLoadingLocation = false;
+  // Mirrors the device's actual GPS toggle. Starts true (optimistic) so the
+  // locator button doesn't flash into its "off" state before the first
+  // check completes; _initializeUserLocation() and the service-status
+  // stream below both correct it as soon as they know better.
+  bool _locationServicesEnabled = true;
+  StreamSubscription<ServiceStatus>? _serviceStatusSubscription;
 
   Map<String, dynamic>? _insideHazardReport;
   bool _isInsideHazardCardVisible = false;
@@ -479,6 +454,25 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
       },
     );
 
+    // Keeps the locator button's on/off look in sync with the device's GPS
+    // toggle in real time (e.g. user flips it from Quick Settings while the
+    // app is open), instead of only finding out the next time we ask.
+    _serviceStatusSubscription = Geolocator.getServiceStatusStream().listen(
+      (ServiceStatus status) {
+        final bool enabled = status == ServiceStatus.enabled;
+        if (mounted) setState(() => _locationServicesEnabled = enabled);
+        if (!enabled) {
+          // Services were just switched off: drop any marker/camera fix we
+          // were showing rather than leaving a stale "you are here" dot on
+          // screen for a location we can no longer vouch for.
+          unawaited(_clearUserLocationMarker());
+        }
+      },
+      onError: (Object error) {
+        debugPrint('Location service status stream error: $error');
+      },
+    );
+
     // Start the nearby notifier once. It reuses the shared notification setup
     // and receives positions from this same live GPS stream.
     unawaited(_startNearbyReportNotifications());
@@ -557,6 +551,7 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     _incidentTransitionController?.dispose();
     _liveAccountSyncTimer?.cancel();
     _positionSubscription?.cancel();
+    _serviceStatusSubscription?.cancel();
     unawaited(nearbyReportsNotifService.stopListening());
     unawaited(insideReportsNotifService.stopListening());
     unawaited(userExitedReportNotifsService.stopListening());
@@ -1318,6 +1313,35 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     }
   }
 
+  /// Removes the "you are here" dot/accuracy circle and forgets the last
+  /// known fix. Used when location services turn off mid-session so we
+  /// don't keep showing a position we can no longer confirm.
+  Future<void> _clearUserLocationMarker() async {
+    _locationAnimationTimer?.cancel();
+    _displayedUserLocation = null;
+    _targetUserLocation = null;
+    _pendingUserLocation = null;
+    _currentPosition = null;
+
+    final controller = mapController;
+    if (controller == null) return;
+
+    try {
+      if (_userLocationSymbol != null) {
+        await controller.removeSymbol(_userLocationSymbol!);
+        _userLocationSymbol = null;
+      }
+      await controller.setGeoJsonSource(
+        'user-accuracy-source',
+        {"type": "FeatureCollection", "features": []},
+      );
+    } on MissingPluginException catch (e) {
+      debugPrint('MapLibre channel detached safely: $e');
+    } catch (e) {
+      debugPrint('Error clearing user location layer: $e');
+    }
+  }
+
   Future<Uint8List> _resizeMarkerAsset(Uint8List assetBytes, int targetWidth) async {
     final ui.Codec codec = await ui.instantiateImageCodec(assetBytes, targetWidth: targetWidth);
     final ui.FrameInfo frameInfo = await codec.getNextFrame();
@@ -1742,8 +1766,20 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
 
     try {
       Position? position = _currentPosition;
-      position ??= await CenterandFixTheViewIncidents.getSafeUserPositionFallback();
+      position ??= await location_fallback.CenterandFixTheViewIncidents
+          .getSafeUserPositionFallback();
       if (!mounted || mapController == null) return;
+
+      if (position == null) {
+        // Services are off, permission is denied, or the fix failed. Don't
+        // invent a coordinate: leave the map on its last valid view (or the
+        // initial overview) with no "you are here" marker, and reflect that
+        // in the locator button's state instead.
+        if (mounted) setState(() => _locationServicesEnabled = false);
+        return;
+      }
+
+      if (mounted) setState(() => _locationServicesEnabled = true);
 
       _currentPosition = position;
       final LatLng targetLocation = LatLng(position.latitude, position.longitude);
@@ -1763,6 +1799,18 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     } finally {
       if (mounted) setState(() => _isRecentering = false);
     }
+  }
+
+  /// Handler wired to the locator button. Mirrors Google Maps: if GPS is
+  /// off, tapping the (grayed-out) button takes the user straight to the
+  /// system location settings instead of silently doing nothing or
+  /// recentering on a fake coordinate.
+  Future<void> _onLocatorButtonPressed() async {
+    if (!_locationServicesEnabled) {
+      await Geolocator.openLocationSettings();
+      return;
+    }
+    await _initializeUserLocation();
   }
 
   Future<void> _handleReportIncident() async {
@@ -1794,12 +1842,13 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
         targetLatLng = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
       } else {
         Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high, timeLimit: const Duration(seconds: 4));
+        _currentPosition = position;
         targetLatLng = LatLng(position.latitude, position.longitude);
       }
 
       if (mapController != null && targetLatLng != null) {
         await AnimatedMapMove.trigger(mapController: mapController!, targetLocation: targetLatLng, zoom: 18.0, duration: const Duration(milliseconds: 1200));
-        if (mounted) _showReportModal();
+        if (mounted) _showReportModal(targetLatLng);
       }
     } catch (e) {
       debugPrint("Location error: $e");
@@ -1841,15 +1890,19 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
     }
   }
 
-  void _showReportModal() {
-    double lat = _currentPosition?.latitude ?? 14.7925;
-    double lon = _currentPosition?.longitude ?? 120.8970;
-
+  // Takes the real fix the caller just obtained instead of re-reading
+  // `_currentPosition` (which can legitimately be null even when we're
+  // holding a fresh, valid position here) and falling back to the fake
+  // Bulacan coordinate.
+  void _showReportModal(LatLng location) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => IsThisYourLocation(latitude: lat, longitude: lon),
+      builder: (context) => IsThisYourLocation(
+        latitude: location.latitude,
+        longitude: location.longitude,
+      ),
     );
   }
 
@@ -2119,8 +2172,9 @@ class _HomepageState extends State<Homepage> with TickerProviderStateMixin {
                               MapLegendsButton(onPressed: _showMapLegendsModal),
                               const SizedBox(height: 12),
                               UserPinpointButton(
-                                onPressed: _initializeUserLocation,
+                                onPressed: _onLocatorButtonPressed,
                                 isLoading: _isRecentering,
+                                isDisabled: !_locationServicesEnabled,
                               ),
                               const SizedBox(height: 12),
                               const SummaryReport_Button(),
