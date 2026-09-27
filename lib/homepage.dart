@@ -9,7 +9,11 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
+// geolocator and permission_handler both export a `ServiceStatus` enum;
+// this file only ever means the geolocator one (used for the GPS
+// on/off stream below), so hide permission_handler's copy to resolve
+// the ambiguous-import error.
+import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
