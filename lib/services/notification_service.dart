@@ -8,6 +8,65 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'notification_store.dart';
 
+/// Shows a tray notification from the background/terminated isolate.
+///
+/// A push that carries a `notification` block is drawn by the OS on its own.
+/// A data-only push (which is how a server usually sends a custom-sound,
+/// custom-channel alert) is NOT -- the app has to draw it, otherwise a closed
+/// app receives the message and shows nothing.
+Future<void> _showBackgroundAlertNotification({
+  required String title,
+  required String body,
+  required String? alertId,
+}) async {
+  final plugin = FlutterLocalNotificationsPlugin();
+  await plugin.initialize(
+    settings: const InitializationSettings(
+      android: AndroidInitializationSettings('@drawable/logo1'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
+    ),
+  );
+
+  final androidPlugin = plugin.resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>();
+  await androidPlugin
+      ?.createNotificationChannel(NotificationService._emergencyChannel);
+
+  // Unique per delivery so every send (including admin resends) is its own
+  // notification instead of silently replacing the previous one.
+  final int notificationId =
+      ((alertId ?? title).hashCode ^ DateTime.now().millisecondsSinceEpoch) &
+          0x7FFFFFFF;
+
+  await plugin.show(
+    id: notificationId,
+    title: title,
+    body: body,
+    notificationDetails: NotificationDetails(
+      android: AndroidNotificationDetails(
+        NotificationService._emergencyChannel.id,
+        NotificationService._emergencyChannel.name,
+        channelDescription: NotificationService._emergencyChannel.description,
+        importance: Importance.max,
+        priority: Priority.high,
+        icon: '@drawable/logo1',
+        playSound: true,
+        enableVibration: true,
+        onlyAlertOnce: false,
+      ),
+      iOS: const DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      ),
+    ),
+  );
+}
+
 /// Top-level entry point function for background messaging.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -45,6 +104,26 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final bool isAlert = message.data['isAdminAlert'] == 'true' ||
         message.data.containsKey('alertId') ||
         (title != null && (title.contains('🚨') || title.toLowerCase().contains('alert') || title.toLowerCase().contains('warning')));
+
+    // Data-only admin alert: nothing will appear in the tray unless we draw
+    // it here. (When `message.notification` exists the OS already showed it.)
+    final bool isAdminAlert = message.data['isAdminAlert'] == 'true' ||
+        message.data.containsKey('alertId');
+    if (!kIsWeb && message.notification == null && isAdminAlert) {
+      try {
+        if (await NotificationService.instance.areNotificationsEnabled()) {
+          await _showBackgroundAlertNotification(
+            title: (title == null || title.isEmpty) ? '🚨 Emergency Alert' : title,
+            body: (body == null || body.isEmpty)
+                ? 'Emergency broadcast update from MDRRMO.'
+                : body,
+            alertId: alertId,
+          );
+        }
+      } catch (error) {
+        debugPrint('Background alert notification failed: $error');
+      }
+    }
 
     await notificationStore.addOrUpdateAndFlush(
       NotificationItem(
