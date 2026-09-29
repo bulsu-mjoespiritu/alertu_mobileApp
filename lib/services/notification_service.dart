@@ -73,7 +73,7 @@ class NotificationService {
   /// [_alertNotifyCooldown] are collapsed into one buzz. After the cooldown
   /// the alert may notify again -- that is what makes an admin "Resend"
   /// (which reuses the same alert id) ring the phone again.
-  static const Duration _alertNotifyCooldown = Duration(seconds: 60);
+  static const Duration _alertNotifyCooldown = Duration(seconds: 15);
   final Map<String, DateTime> _deviceNotifiedAlertAt = <String, DateTime>{};
 
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
@@ -441,6 +441,9 @@ class NotificationService {
       icon: '@drawable/logo1',
       playSound: true,
       enableVibration: true,
+      // Every send must ring, even when it updates a notification that is
+      // still sitting in the tray.
+      onlyAlertOnce: false,
     );
 
     const iosDetails = DarwinNotificationDetails(

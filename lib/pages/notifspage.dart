@@ -201,6 +201,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
           final bool isRecent = DateTime.now().difference(sentTime) <
               const Duration(minutes: 30);
 
+          debugPrint(
+              '🔔 [Alerts] $docId new=$isNewToDevice resent=$wasResent '
+              'version=$newVersion seen=$seenVersion recent=$isRecent');
+
           _upsertNotification(item);
 
           if ((isNewToDevice || wasResent) && isRecent) {
@@ -283,7 +287,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
         .cast<NotificationItem?>()
         .firstWhere((n) => n?.id == id, orElse: () => null);
     final v = found?.alertData?['sentVersion'];
-    return v is num ? v.toInt() : null;
+    if (v is num) return v.toInt();
+    // A bare copy saved by a push (no details snapshot) has no version, but
+    // its timestamp is when that push arrived -- good enough to tell a
+    // later resend from the send it already covered.
+    if (found != null) return found.timestamp.millisecondsSinceEpoch;
+    return null;
   }
 
   /// Raises a real phone notification (tray banner, sound, vibration) for
@@ -294,7 +303,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final String alertId = item.resolvedAlertId ?? item.id;
     unawaited(
       NotificationService.instance.showLocalNotification(
-        id: alertId.hashCode,
+        // Unique per send so a resend shows up as its own notification
+        // instead of silently replacing the one already in the tray.
+        id: (alertId.hashCode ^ DateTime.now().millisecondsSinceEpoch) &
+            0x7FFFFFFF,
         title: item.title,
         body: item.description,
         alertId: alertId,
