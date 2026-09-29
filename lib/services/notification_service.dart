@@ -6,6 +6,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'api_service.dart';
 import 'notification_store.dart';
 
 /// Shows a tray notification from the background/terminated isolate.
@@ -105,11 +106,10 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         message.data.containsKey('alertId') ||
         (title != null && (title.contains('🚨') || title.toLowerCase().contains('alert') || title.toLowerCase().contains('warning')));
 
-    // Data-only admin alert: nothing will appear in the tray unless we draw
-    // it here. (When `message.notification` exists the OS already showed it.)
-    final bool isAdminAlert = message.data['isAdminAlert'] == 'true' ||
-        message.data.containsKey('alertId');
-    if (!kIsWeb && message.notification == null && isAdminAlert) {
+    // Data-only push (any type: alert, report update, chat...): nothing will
+    // appear in the tray unless we draw it here. (When `message.notification`
+    // exists the OS already showed it, so we skip it to avoid duplicates.)
+    if (!kIsWeb && message.notification == null) {
       try {
         if (await NotificationService.instance.areNotificationsEnabled()) {
           await _showBackgroundAlertNotification(
@@ -184,8 +184,40 @@ class NotificationService {
     await _setupNotificationTapHandlers();
     await getFcmToken();
     await subscribeToPublicTopics();
+    _keepServerTokenFresh();
 
     _isInitialized = true;
+  }
+
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<String>? _tokenRefreshSub;
+
+  /// The server sends report updates and chat messages to the token saved on
+  /// the citizen's document, so that token must always be current. Register
+  /// it whenever a user signs in and whenever Firebase rotates it; before,
+  /// it was only sent once at app start, so a fresh login (or a rotated
+  /// token) meant those pushes went nowhere until the next launch.
+  void _keepServerTokenFresh() {
+    _authSub ??= FirebaseAuth.instance.authStateChanges().listen((user) async {
+      if (user == null) return;
+      await _registerCurrentTokenWithServer();
+    });
+    _tokenRefreshSub ??= _messaging.onTokenRefresh.listen((newToken) async {
+      if (FirebaseAuth.instance.currentUser == null) return;
+      await ApiService.registerFcmToken(newToken);
+    });
+  }
+
+  Future<void> _registerCurrentTokenWithServer() async {
+    try {
+      final token = await _messaging.getToken();
+      if (token != null) {
+        final ok = await ApiService.registerFcmToken(token);
+        debugPrint(ok ? '🔑 FCM token registered with server' : '⚠️ FCM token registration failed');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Could not register FCM token: $e');
+    }
   }
 
   /// Subscribes this device to broadcast emergency alert topics
