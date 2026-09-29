@@ -185,15 +185,25 @@ class _NotificationsPageState extends State<NotificationsPage> {
           );
 
           // This stream replays every still-active alert each time it
-          // (re)connects, so only alerts that are new to this device --
-          // and recent -- should raise a system notification.
+          // (re)connects, so a system notification is only raised when:
+          //  * the alert is new to this device, or
+          //  * the admin sent it again (Send Now / Resend bump sentAt /
+          //    resentAt, so the version is newer than the one we stored).
+          // Either way it must be recent, so old alerts don't ring on launch.
+          final int newVersion = AlertDetails.sentVersionOf(data);
+          final int? seenVersion = _knownAlertVersion(item.id);
           final bool isNewToDevice = !_isKnownNotification(item.id);
-          final bool isRecent = DateTime.now().difference(timestamp) <
+          final bool wasResent =
+              seenVersion != null && newVersion > seenVersion;
+          final DateTime sentTime = newVersion > 0
+              ? DateTime.fromMillisecondsSinceEpoch(newVersion)
+              : timestamp;
+          final bool isRecent = DateTime.now().difference(sentTime) <
               const Duration(minutes: 30);
 
           _upsertNotification(item);
 
-          if (isNewToDevice && isRecent) {
+          if ((isNewToDevice || wasResent) && isRecent) {
             _showDeviceAlert(item);
           }
         }
@@ -257,6 +267,24 @@ class _NotificationsPageState extends State<NotificationsPage> {
   bool _isKnownNotification(String id) =>
       _notifications.any((n) => n.id == id) ||
       notificationStore.notifications.value.any((n) => n.id == id);
+
+  /// The send version last saved with the alert notification [id], or null
+  /// when there is none (never seen, or only a bare push copy without a
+  /// details snapshot -- which is treated as already notified).
+  int? _knownAlertVersion(String id) {
+    NotificationItem? found;
+    for (final n in _notifications) {
+      if (n.id == id) {
+        found = n;
+        break;
+      }
+    }
+    found ??= notificationStore.notifications.value
+        .cast<NotificationItem?>()
+        .firstWhere((n) => n?.id == id, orElse: () => null);
+    final v = found?.alertData?['sentVersion'];
+    return v is num ? v.toInt() : null;
+  }
 
   /// Raises a real phone notification (tray banner, sound, vibration) for
   /// an admin broadcast alert. The in-app card is already saved by
@@ -783,14 +811,19 @@ class _NotificationsPageState extends State<NotificationsPage> {
         isSuccess: false,
         isProcessing: false,
         alertId: hasRealAlertId ? alertId : null,
-        alertData: AlertDetails.compactFromFirestore(data, alertId),
+        alertData: <String, dynamic>{
+          ...AlertDetails.compactFromFirestore(data, alertId),
+          // Stamp when this device received the broadcast so the Firestore
+          // stream doesn't treat the same send as a fresh resend later.
+          'sentVersion': DateTime.now().millisecondsSinceEpoch,
+        },
       );
 
-      final bool isNewToDevice = !_isKnownNotification(alertItem.id);
+      // A socket broadcast is an explicit send from the admin (including
+      // "Resend"), so always notify. The service collapses the same send
+      // arriving over FCM / Firestore into a single buzz.
       _upsertNotification(alertItem);
-      if (isNewToDevice) {
-        _showDeviceAlert(alertItem);
-      }
+      _showDeviceAlert(alertItem);
 
       // Show in-app banner toast
       ScaffoldMessenger.of(context).clearSnackBars();

@@ -31,6 +31,9 @@ class AlertDetails {
   /// ISO-8601 expiry, used to flip the badge to "expired" once it passes.
   final String? expiresAt;
 
+  /// Photos the admin attached to the alert (Firebase Storage download URLs).
+  final List<String> imageUrls;
+
   const AlertDetails({
     required this.title,
     required this.message,
@@ -41,6 +44,7 @@ class AlertDetails {
     this.recipients = '',
     this.expiresIn = '',
     this.expiresAt,
+    this.imageUrls = const <String>[],
   });
 
   // ---------------------------------------------------------------------
@@ -133,6 +137,9 @@ class AlertDetails {
       expiresIn = _durationLabel(expiresAt.difference(createdAt));
     }
 
+    // Photos attached from the admin dashboard.
+    final imageUrls = _readUrls(raw['imageUrls']);
+
     return <String, dynamic>{
       'id': alertId,
       'title': raw['title']?.toString().trim() ?? '',
@@ -144,7 +151,34 @@ class AlertDetails {
       'recipients': recipients,
       'expiresIn': expiresIn,
       if (expiresAt != null) 'expiresAt': expiresAt.toIso8601String(),
+      if (imageUrls.isNotEmpty) 'imageUrls': imageUrls,
+      // Lets the device tell "the admin resent this alert" apart from
+      // "the Firestore stream just reconnected and replayed it".
+      'sentVersion': sentVersionOf(raw),
     };
+  }
+
+  /// Milliseconds since epoch of the latest explicit send of this alert:
+  /// the dashboard stamps `sentAt` on "Send Now" and `resentAt` on
+  /// "Resend". 0 when the alert was never sent/resent after creation.
+  static int sentVersionOf(Map<String, dynamic> raw) {
+    var best = 0;
+    for (final key in const ['sentAt', 'resentAt']) {
+      final d = _toDate(raw[key]);
+      if (d != null && d.millisecondsSinceEpoch > best) {
+        best = d.millisecondsSinceEpoch;
+      }
+    }
+    return best;
+  }
+
+  static List<String> _readUrls(dynamic value) {
+    if (value is! List) return const <String>[];
+    return value
+        .whereType<String>()
+        .map((u) => u.trim())
+        .where((u) => u.isNotEmpty)
+        .toList();
   }
 
   /// Rebuilds details from a compact map. [fallbackTitle] and
@@ -172,6 +206,7 @@ class AlertDetails {
       recipients: read('recipients'),
       expiresIn: read('expiresIn'),
       expiresAt: map['expiresAt']?.toString(),
+      imageUrls: _readUrls(map['imageUrls']),
     );
   }
 
@@ -343,6 +378,34 @@ class _AlertDetailsDialog extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (details.imageUrls.isNotEmpty) ...[
+                      const SizedBox(height: 18),
+                      _label('PHOTOS', labelColor),
+                      const SizedBox(height: 8),
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: details.imageUrls.length,
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          mainAxisSpacing: 8,
+                          crossAxisSpacing: 8,
+                        ),
+                        itemBuilder: (context, index) => GestureDetector(
+                          onTap: () => _openPhotoViewer(
+                              context, details.imageUrls, index),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: _NetworkPhoto(
+                              url: details.imageUrls[index],
+                              fit: BoxFit.cover,
+                              background: messageBg,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -369,6 +432,138 @@ class _AlertDetailsDialog extends StatelessWidget {
         fontWeight: FontWeight.w600,
         color: color,
       );
+}
+
+/// Network image with a loading spinner and a broken-image fallback.
+class _NetworkPhoto extends StatelessWidget {
+  final String url;
+  final BoxFit fit;
+  final Color background;
+
+  const _NetworkPhoto({
+    required this.url,
+    required this.fit,
+    required this.background,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.network(
+      url,
+      fit: fit,
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        final total = progress.expectedTotalBytes;
+        return Container(
+          color: background,
+          alignment: Alignment.center,
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              value: total == null
+                  ? null
+                  : progress.cumulativeBytesLoaded / total,
+            ),
+          ),
+        );
+      },
+      errorBuilder: (context, error, stack) => Container(
+        color: background,
+        alignment: Alignment.center,
+        child: const Icon(Icons.broken_image_outlined,
+            size: 22, color: Color(0xFF94A3B8)),
+      ),
+    );
+  }
+}
+
+void _openPhotoViewer(BuildContext context, List<String> urls, int initial) {
+  showDialog<void>(
+    context: context,
+    barrierColor: Colors.black87,
+    builder: (_) => _PhotoViewer(urls: urls, initialIndex: initial),
+  );
+}
+
+/// Full-screen, swipeable, pinch-to-zoom photo viewer.
+class _PhotoViewer extends StatefulWidget {
+  final List<String> urls;
+  final int initialIndex;
+
+  const _PhotoViewer({required this.urls, required this.initialIndex});
+
+  @override
+  State<_PhotoViewer> createState() => _PhotoViewerState();
+}
+
+class _PhotoViewerState extends State<_PhotoViewer> {
+  late final PageController _controller;
+  late int _index;
+
+  @override
+  void initState() {
+    super.initState();
+    _index = widget.initialIndex;
+    _controller = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: SizedBox.expand(
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: _controller,
+              itemCount: widget.urls.length,
+              onPageChanged: (i) => setState(() => _index = i),
+              itemBuilder: (context, i) => InteractiveViewer(
+                minScale: 1,
+                maxScale: 4,
+                child: Center(
+                  child: _NetworkPhoto(
+                    url: widget.urls[i],
+                    fit: BoxFit.contain,
+                    background: Colors.transparent,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 8,
+              right: 8,
+              child: IconButton(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(LucideIcons.x, color: Colors.white),
+                tooltip: 'Close',
+              ),
+            ),
+            if (widget.urls.length > 1)
+              Positioned(
+                bottom: MediaQuery.of(context).padding.bottom + 16,
+                left: 0,
+                right: 0,
+                child: Text(
+                  '${_index + 1} / ${widget.urls.length}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _StatusBadge extends StatelessWidget {

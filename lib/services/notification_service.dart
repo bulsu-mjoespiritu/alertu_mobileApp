@@ -67,10 +67,14 @@ class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
 
-  /// Admin alert ids that already raised a system notification this
-  /// session, so the same alert arriving over FCM, the socket and the
-  /// Firestore stream only buzzes the phone once.
-  final Set<String> _deviceNotifiedAlertIds = <String>{};
+  /// When each admin alert last raised a system notification on this
+  /// device. The same alert reaches the phone over FCM, the socket and the
+  /// Firestore stream within a few seconds of each other, so repeats inside
+  /// [_alertNotifyCooldown] are collapsed into one buzz. After the cooldown
+  /// the alert may notify again -- that is what makes an admin "Resend"
+  /// (which reuses the same alert id) ring the phone again.
+  static const Duration _alertNotifyCooldown = Duration(seconds: 60);
+  final Map<String, DateTime> _deviceNotifiedAlertAt = <String, DateTime>{};
 
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications =
@@ -412,13 +416,20 @@ class NotificationService {
     }
 
     // An admin alert can reach the phone by several routes at once (FCM,
-    // the socket, the Firestore stream). Only the first one raises the
-    // system notification; the rest just refresh the store above.
+    // the socket, the Firestore stream). Only the first one inside the
+    // cooldown raises the system notification; the rest just refresh the
+    // store above. A later delivery (e.g. an admin resend) notifies again.
     if (alertId != null && alertId.isNotEmpty) {
-      if (!_deviceNotifiedAlertIds.add(alertId)) {
-        debugPrint('🔕 System notification for alert $alertId already shown.');
+      final now = DateTime.now();
+      final last = _deviceNotifiedAlertAt[alertId];
+      if (last != null && now.difference(last) < _alertNotifyCooldown) {
+        debugPrint('🔕 System notification for alert $alertId already shown moments ago.');
         return;
       }
+      _deviceNotifiedAlertAt[alertId] = now;
+      _deviceNotifiedAlertAt.removeWhere(
+        (_, shownAt) => now.difference(shownAt) > const Duration(hours: 1),
+      );
     }
 
     final androidDetails = AndroidNotificationDetails(
