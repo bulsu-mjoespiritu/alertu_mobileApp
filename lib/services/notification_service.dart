@@ -74,28 +74,49 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   debugPrint('🚨 Background Message Received: ${message.messageId}');
 
+  final notification = message.notification;
+  final String? title = notification?.title?.trim().isNotEmpty == true
+      ? notification!.title!.trim()
+      : (message.data['title'] as String?)?.trim();
+  final String? body = notification?.body?.trim().isNotEmpty == true
+      ? notification!.body!.trim()
+      : ((message.data['message'] ?? message.data['body']) as String?)?.trim();
+
+  if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
+    return;
+  }
+
+  final String? alertId = message.data['alertId']?.toString();
+
+  // 1) TRAY FIRST. Data-only push: nothing appears unless we draw it here.
+  //    (When `message.notification` exists the OS already showed it, so we
+  //    skip it to avoid duplicates.) This must not sit behind Firestore,
+  //    Auth or the notification store -- if any of those throw or stall in
+  //    this isolate, the alert would silently never appear.
+  if (!kIsWeb && message.notification == null) {
+    try {
+      await _showBackgroundAlertNotification(
+        title: (title == null || title.isEmpty) ? '🚨 Emergency Alert' : title,
+        body: (body == null || body.isEmpty)
+            ? 'Emergency broadcast update from MDRRMO.'
+            : body,
+        alertId: alertId,
+      );
+    } catch (error) {
+      debugPrint('Background alert notification failed: $error');
+    }
+  }
+
+  // 2) Persist for the Notifications page. Best-effort only.
   try {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
       await notificationStore.loadForUser(uid);
     }
 
-    final notification = message.notification;
-    final String? title = notification?.title?.trim().isNotEmpty == true
-        ? notification!.title!.trim()
-        : (message.data['title'] as String?)?.trim();
-    final String? body = notification?.body?.trim().isNotEmpty == true
-        ? notification!.body!.trim()
-        : ((message.data['message'] ?? message.data['body']) as String?)?.trim();
-
-    if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
-      return;
-    }
-
     // Admin broadcast alerts share the 'admin_alert_<id>' id used by the
     // Notifications page's Firestore/socket listeners, so the same alert
     // arriving over several channels collapses into one card.
-    final String? alertId = message.data['alertId']?.toString();
     final String id = (alertId != null && alertId.isNotEmpty)
         ? 'admin_alert_$alertId'
         : (message.data['id'] ??
@@ -104,26 +125,10 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
     final bool isAlert = message.data['isAdminAlert'] == 'true' ||
         message.data.containsKey('alertId') ||
-        (title != null && (title.contains('🚨') || title.toLowerCase().contains('alert') || title.toLowerCase().contains('warning')));
-
-    // Data-only push (any type: alert, report update, chat...): nothing will
-    // appear in the tray unless we draw it here. (When `message.notification`
-    // exists the OS already showed it, so we skip it to avoid duplicates.)
-    if (!kIsWeb && message.notification == null) {
-      try {
-        if (await NotificationService.instance.areNotificationsEnabled()) {
-          await _showBackgroundAlertNotification(
-            title: (title == null || title.isEmpty) ? '🚨 Emergency Alert' : title,
-            body: (body == null || body.isEmpty)
-                ? 'Emergency broadcast update from MDRRMO.'
-                : body,
-            alertId: alertId,
-          );
-        }
-      } catch (error) {
-        debugPrint('Background alert notification failed: $error');
-      }
-    }
+        (title != null &&
+            (title.contains('🚨') ||
+                title.toLowerCase().contains('alert') ||
+                title.toLowerCase().contains('warning')));
 
     await notificationStore.addOrUpdateAndFlush(
       NotificationItem(
@@ -161,6 +166,14 @@ class NotificationService {
 
   bool _isInitialized = false;
 
+  /// Call from main() immediately after Firebase.initializeApp(), BEFORE
+  /// initialize(). Registering here (instead of after the permission prompt
+  /// and local-notification setup) guarantees the handler exists even if
+  /// those earlier steps throw or hang.
+  static void registerBackgroundHandler() {
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  }
+
   /// High-priority notification channel for Android foreground alerts
   static const AndroidNotificationChannel _emergencyChannel =
   AndroidNotificationChannel(
@@ -179,7 +192,6 @@ class NotificationService {
     await _requestPermission();
     await _setupLocalNotifications();
 
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
     _setupForegroundHandler();
     await _setupNotificationTapHandlers();
     await getFcmToken();
@@ -365,6 +377,7 @@ class NotificationService {
 
     if (androidPlugin != null) {
       await androidPlugin.createNotificationChannel(_emergencyChannel);
+      await androidPlugin.requestNotificationsPermission();
     }
   }
 

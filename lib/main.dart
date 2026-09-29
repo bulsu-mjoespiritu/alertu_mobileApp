@@ -48,6 +48,10 @@ void main() async {
 
   await Firebase.initializeApp();
 
+  // Must be registered first thing, before any permission prompt or other
+  // notification setup, so terminated-app pushes always have a handler.
+  NotificationService.registerBackgroundHandler();
+
   try {
     await NotificationService.instance.initialize();
     await ReportNotifService.instance.initializeAndStart();
