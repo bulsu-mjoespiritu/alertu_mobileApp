@@ -36,6 +36,16 @@ class NotificationItem {
   /// fetching by [reportId].
   final Map<String, dynamic>? reportData;
 
+  /// Id of the admin broadcast alert (the `alerts` Firestore document sent
+  /// from the dashboard) this notification is about. Lets a tap open the
+  /// "Alert Details" card.
+  final String? alertId;
+
+  /// JSON-safe snapshot of that alert (see `AlertDetails.compactFromFirestore`)
+  /// so the details card still opens after the alert expires or is
+  /// archived, and while offline.
+  final Map<String, dynamic>? alertData;
+
   NotificationItem({
     required this.id,
     required this.title,
@@ -47,12 +57,31 @@ class NotificationItem {
     this.isRead = false,
     this.reportId,
     this.reportData,
+    this.alertId,
+    this.alertData,
   });
+
+  /// True when this notification is an admin broadcast alert that can open
+  /// the "Alert Details" card.
+  bool get isBroadcastAlert =>
+      (alertId != null && alertId!.trim().isNotEmpty) ||
+          (alertData != null && alertData!.isNotEmpty) ||
+          id.startsWith('admin_alert_');
+
+  /// The alert's Firestore document id, when it can be worked out.
+  String? get resolvedAlertId {
+    if (alertId != null && alertId!.trim().isNotEmpty) return alertId!.trim();
+    if (id.startsWith('admin_alert_')) {
+      final stripped = id.substring('admin_alert_'.length);
+      return stripped.isEmpty ? null : stripped;
+    }
+    return null;
+  }
 
   /// True when this notification can open an incident details screen.
   bool get hasReportDetails =>
       (reportId != null && reportId!.trim().isNotEmpty) ||
-      (reportData != null && reportData!.isNotEmpty);
+          (reportData != null && reportData!.isNotEmpty);
 
   NotificationItem copyWith({
     String? id,
@@ -65,6 +94,8 @@ class NotificationItem {
     bool? isRead,
     String? reportId,
     Map<String, dynamic>? reportData,
+    String? alertId,
+    Map<String, dynamic>? alertData,
   }) {
     return NotificationItem(
       id: id ?? this.id,
@@ -77,30 +108,35 @@ class NotificationItem {
       isRead: isRead ?? this.isRead,
       reportId: reportId ?? this.reportId,
       reportData: reportData ?? this.reportData,
+      alertId: alertId ?? this.alertId,
+      alertData: alertData ?? this.alertData,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'description': description,
-        'timestamp': timestamp.toIso8601String(),
-        'isProcessing': isProcessing,
-        'isSuccess': isSuccess,
-        'isAlert': isAlert,
-        'isRead': isRead,
-        if (reportId != null) 'reportId': reportId,
-        if (reportData != null) 'reportData': reportData,
-      };
+    'id': id,
+    'title': title,
+    'description': description,
+    'timestamp': timestamp.toIso8601String(),
+    'isProcessing': isProcessing,
+    'isSuccess': isSuccess,
+    'isAlert': isAlert,
+    'isRead': isRead,
+    if (reportId != null) 'reportId': reportId,
+    if (reportData != null) 'reportData': reportData,
+    if (alertId != null) 'alertId': alertId,
+    if (alertData != null) 'alertData': alertData,
+  };
 
   factory NotificationItem.fromJson(Map<String, dynamic> json) {
     final rawReportData = json['reportData'];
+    final rawAlertData = json['alertData'];
     return NotificationItem(
       id: json['id'] as String,
       title: json['title'] as String? ?? '',
       description: json['description'] as String? ?? '',
       timestamp:
-          DateTime.tryParse(json['timestamp'] as String? ?? '') ?? DateTime.now(),
+      DateTime.tryParse(json['timestamp'] as String? ?? '') ?? DateTime.now(),
       isProcessing: json['isProcessing'] as bool? ?? false,
       isSuccess: json['isSuccess'] as bool? ?? false,
       isAlert: json['isAlert'] as bool? ?? false,
@@ -108,6 +144,10 @@ class NotificationItem {
       reportId: json['reportId'] as String?,
       reportData: rawReportData is Map
           ? Map<String, dynamic>.from(rawReportData)
+          : null,
+      alertId: json['alertId'] as String?,
+      alertData: rawAlertData is Map
+          ? Map<String, dynamic>.from(rawAlertData)
           : null,
     );
   }
@@ -136,7 +176,7 @@ class NotificationStore {
   static final NotificationStore instance = NotificationStore._();
 
   final ValueNotifier<List<NotificationItem>> notifications =
-      ValueNotifier<List<NotificationItem>>(<NotificationItem>[]);
+  ValueNotifier<List<NotificationItem>>(<NotificationItem>[]);
 
   final Set<String> _knownIds = <String>{};
 
@@ -269,7 +309,7 @@ class NotificationStore {
       return;
     }
     final withoutExisting =
-        notifications.value.where((existing) => existing.id != item.id).toList();
+    notifications.value.where((existing) => existing.id != item.id).toList();
     _knownIds.add(item.id);
     notifications.value = <NotificationItem>[item, ...withoutExisting];
     unawaited(_persist());
@@ -287,7 +327,7 @@ class NotificationStore {
       return;
     }
     final withoutExisting =
-        notifications.value.where((existing) => existing.id != item.id).toList();
+    notifications.value.where((existing) => existing.id != item.id).toList();
     _knownIds.add(item.id);
     notifications.value = <NotificationItem>[item, ...withoutExisting];
     await _persist();
@@ -302,9 +342,9 @@ class NotificationStore {
   }
 
   void update(
-    String id,
-    NotificationItem Function(NotificationItem current) transform,
-  ) {
+      String id,
+      NotificationItem Function(NotificationItem current) transform,
+      ) {
     notifications.value = notifications.value
         .map((item) => item.id == id ? transform(item) : item)
         .toList();
@@ -340,7 +380,7 @@ class NotificationStore {
     try {
       final file = await _fileForUser(uid);
       final raw =
-          jsonEncode(notifications.value.map((item) => item.toJson()).toList());
+      jsonEncode(notifications.value.map((item) => item.toJson()).toList());
       await file.writeAsString(raw);
     } catch (error) {
       debugPrint('NotificationStore: failed to persist notifications: $error');

@@ -6,7 +6,67 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'api_service.dart';
 import 'notification_store.dart';
+
+/// Shows a tray notification from the background/terminated isolate.
+///
+/// A push that carries a `notification` block is drawn by the OS on its own.
+/// A data-only push (which is how a server usually sends a custom-sound,
+/// custom-channel alert) is NOT -- the app has to draw it, otherwise a closed
+/// app receives the message and shows nothing.
+Future<void> _showBackgroundAlertNotification({
+  required String title,
+  required String body,
+  required String? alertId,
+}) async {
+  final plugin = FlutterLocalNotificationsPlugin();
+  await plugin.initialize(
+    settings: const InitializationSettings(
+      android: AndroidInitializationSettings('@drawable/logo1'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
+    ),
+  );
+
+  final androidPlugin = plugin.resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>();
+  await androidPlugin
+      ?.createNotificationChannel(NotificationService._emergencyChannel);
+
+  // Unique per delivery so every send (including admin resends) is its own
+  // notification instead of silently replacing the previous one.
+  final int notificationId =
+  ((alertId ?? title).hashCode ^ DateTime.now().millisecondsSinceEpoch) &
+  0x7FFFFFFF;
+
+  await plugin.show(
+    id: notificationId,
+    title: title,
+    body: body,
+    notificationDetails: NotificationDetails(
+      android: AndroidNotificationDetails(
+        NotificationService._emergencyChannel.id,
+        NotificationService._emergencyChannel.name,
+        channelDescription: NotificationService._emergencyChannel.description,
+        importance: Importance.max,
+        priority: Priority.high,
+        icon: '@drawable/logo1',
+        playSound: true,
+        enableVibration: true,
+        onlyAlertOnce: false,
+      ),
+      iOS: const DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      ),
+    ),
+  );
+}
 
 /// Top-level entry point function for background messaging.
 @pragma('vm:entry-point')
@@ -14,37 +74,61 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   debugPrint('🚨 Background Message Received: ${message.messageId}');
 
+  final notification = message.notification;
+  final String? title = notification?.title?.trim().isNotEmpty == true
+      ? notification!.title!.trim()
+      : (message.data['title'] as String?)?.trim();
+  final String? body = notification?.body?.trim().isNotEmpty == true
+      ? notification!.body!.trim()
+      : ((message.data['message'] ?? message.data['body']) as String?)?.trim();
+
+  if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
+    return;
+  }
+
+  final String? alertId = message.data['alertId']?.toString();
+
+  // 1) TRAY FIRST. Data-only push: nothing appears unless we draw it here.
+  //    (When `message.notification` exists the OS already showed it, so we
+  //    skip it to avoid duplicates.) This must not sit behind Firestore,
+  //    Auth or the notification store -- if any of those throw or stall in
+  //    this isolate, the alert would silently never appear.
+  if (!kIsWeb && message.notification == null) {
+    try {
+      await _showBackgroundAlertNotification(
+        title: (title == null || title.isEmpty) ? '🚨 Emergency Alert' : title,
+        body: (body == null || body.isEmpty)
+            ? 'Emergency broadcast update from MDRRMO.'
+            : body,
+        alertId: alertId,
+      );
+    } catch (error) {
+      debugPrint('Background alert notification failed: $error');
+    }
+  }
+
+  // 2) Persist for the Notifications page. Best-effort only.
   try {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
       await notificationStore.loadForUser(uid);
     }
 
-    final notification = message.notification;
-    final String? title = notification?.title?.trim().isNotEmpty == true
-        ? notification!.title!.trim()
-        : (message.data['title'] as String?)?.trim();
-    final String? body = notification?.body?.trim().isNotEmpty == true
-        ? notification!.body!.trim()
-        : ((message.data['message'] ?? message.data['body']) as String?)?.trim();
-
-    if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
-      return;
-    }
-
     // Admin broadcast alerts share the 'admin_alert_<id>' id used by the
     // Notifications page's Firestore/socket listeners, so the same alert
     // arriving over several channels collapses into one card.
-    final String? alertId = message.data['alertId']?.toString();
     final String id = (alertId != null && alertId.isNotEmpty)
         ? 'admin_alert_$alertId'
         : (message.data['id'] ??
-            message.messageId ??
-            'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
+        message.messageId ??
+        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
 
     final bool isAlert = message.data['isAdminAlert'] == 'true' ||
         message.data.containsKey('alertId') ||
-        (title != null && (title.contains('🚨') || title.toLowerCase().contains('alert') || title.toLowerCase().contains('warning')));
+        (title != null &&
+            (title.contains('🚨') ||
+                title.toLowerCase().contains('alert') ||
+                title.toLowerCase().contains('warning')));
 
     await notificationStore.addOrUpdateAndFlush(
       NotificationItem(
@@ -67,16 +151,28 @@ class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
 
-  /// Admin alert ids that already raised a system notification this
-  /// session, so the same alert arriving over FCM, the socket and the
-  /// Firestore stream only buzzes the phone once.
-  final Set<String> _deviceNotifiedAlertIds = <String>{};
+  /// When each admin alert last raised a system notification on this
+  /// device. The same alert reaches the phone over FCM, the socket and the
+  /// Firestore stream within a few seconds of each other, so repeats inside
+  /// [_alertNotifyCooldown] are collapsed into one buzz. After the cooldown
+  /// the alert may notify again -- that is what makes an admin "Resend"
+  /// (which reuses the same alert id) ring the phone again.
+  static const Duration _alertNotifyCooldown = Duration(seconds: 15);
+  final Map<String, DateTime> _deviceNotifiedAlertAt = <String, DateTime>{};
 
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications =
   FlutterLocalNotificationsPlugin();
 
   bool _isInitialized = false;
+
+  /// Call from main() immediately after Firebase.initializeApp(), BEFORE
+  /// initialize(). Registering here (instead of after the permission prompt
+  /// and local-notification setup) guarantees the handler exists even if
+  /// those earlier steps throw or hang.
+  static void registerBackgroundHandler() {
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  }
 
   /// High-priority notification channel for Android foreground alerts
   static const AndroidNotificationChannel _emergencyChannel =
@@ -96,21 +192,55 @@ class NotificationService {
     await _requestPermission();
     await _setupLocalNotifications();
 
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
     _setupForegroundHandler();
     await _setupNotificationTapHandlers();
     await getFcmToken();
     await subscribeToPublicTopics();
+    _keepServerTokenFresh();
 
     _isInitialized = true;
+  }
+
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<String>? _tokenRefreshSub;
+
+  /// The server sends report updates and chat messages to the token saved on
+  /// the citizen's document, so that token must always be current. Register
+  /// it whenever a user signs in and whenever Firebase rotates it; before,
+  /// it was only sent once at app start, so a fresh login (or a rotated
+  /// token) meant those pushes went nowhere until the next launch.
+  void _keepServerTokenFresh() {
+    _authSub ??= FirebaseAuth.instance.authStateChanges().listen((user) async {
+      if (user == null) return;
+      await _registerCurrentTokenWithServer();
+    });
+    _tokenRefreshSub ??= _messaging.onTokenRefresh.listen((newToken) async {
+      if (FirebaseAuth.instance.currentUser == null) return;
+      await ApiService.registerFcmToken(newToken);
+    });
+  }
+
+  Future<void> _registerCurrentTokenWithServer() async {
+    try {
+      final token = await _messaging.getToken();
+      if (token != null) {
+        final ok = await ApiService.registerFcmToken(token);
+        debugPrint(ok ? '🔑 FCM token registered with server' : '⚠️ FCM token registration failed');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Could not register FCM token: $e');
+    }
   }
 
   /// Subscribes this device to broadcast emergency alert topics
   Future<void> subscribeToPublicTopics() async {
     try {
       await _messaging.subscribeToTopic('all_residents');
-      await _messaging.subscribeToTopic('approved_reports');
-      debugPrint('📢 Successfully subscribed to FCM topics: all_residents, approved_reports');
+      // Privacy: do NOT subscribe to 'approved_reports'. That topic pushed
+      // every approved report to every resident. Topic subscriptions
+      // persist on the server, so unsubscribe devices that already joined.
+      await _messaging.unsubscribeFromTopic('approved_reports');
+      debugPrint('📢 Subscribed to FCM topic: all_residents');
     } catch (e) {
       debugPrint('⚠️ Error subscribing to public topics: $e');
     }
@@ -250,12 +380,20 @@ class NotificationService {
 
     if (androidPlugin != null) {
       await androidPlugin.createNotificationChannel(_emergencyChannel);
+      await androidPlugin.requestNotificationsPermission();
     }
   }
 
   void _setupForegroundHandler() {
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       debugPrint('📨 Foreground Message Received: ${message.notification?.title ?? message.data['title']}');
+
+      // Privacy: never surface other users' report broadcasts. Reporters
+      // are notified by ReportNotifService (ownership-checked) instead.
+      if (message.from == '/topics/approved_reports') {
+        debugPrint('🔒 Dropped approved_reports topic broadcast.');
+        return;
+      }
 
       final notification = message.notification;
       final String title = notification?.title?.trim().isNotEmpty == true
@@ -265,8 +403,8 @@ class NotificationService {
       final String body = notification?.body?.trim().isNotEmpty == true
           ? notification!.body!.trim()
           : (message.data['message']?.toString().trim() ??
-             message.data['body']?.toString().trim() ??
-             'You have a new AlertU update.');
+          message.data['body']?.toString().trim() ??
+          'You have a new AlertU update.');
 
       final bool isAlert = message.data['isAdminAlert'] == 'true' ||
           message.data.containsKey('alertId') ||
@@ -306,8 +444,8 @@ class NotificationService {
     final String id = (alertId != null && alertId.isNotEmpty)
         ? 'admin_alert_$alertId'
         : (message.data['id'] ??
-            message.messageId ??
-            'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
+        message.messageId ??
+        'fcm_${DateTime.now().microsecondsSinceEpoch}_${message.hashCode}');
 
     final bool isAlert = message.data['isAdminAlert'] == 'true' ||
         message.data.containsKey('alertId') ||
@@ -388,9 +526,9 @@ class NotificationService {
 
     final bool isAlert = isAlertOverride ??
         (title.contains('🚨') ||
-         title.toLowerCase().contains('alert') ||
-         title.toLowerCase().contains('warning') ||
-         title.toLowerCase().contains('danger'));
+            title.toLowerCase().contains('alert') ||
+            title.toLowerCase().contains('warning') ||
+            title.toLowerCase().contains('danger'));
 
     if (saveToStore) {
       notificationStore.addOrUpdate(
@@ -412,13 +550,20 @@ class NotificationService {
     }
 
     // An admin alert can reach the phone by several routes at once (FCM,
-    // the socket, the Firestore stream). Only the first one raises the
-    // system notification; the rest just refresh the store above.
+    // the socket, the Firestore stream). Only the first one inside the
+    // cooldown raises the system notification; the rest just refresh the
+    // store above. A later delivery (e.g. an admin resend) notifies again.
     if (alertId != null && alertId.isNotEmpty) {
-      if (!_deviceNotifiedAlertIds.add(alertId)) {
-        debugPrint('🔕 System notification for alert $alertId already shown.');
+      final now = DateTime.now();
+      final last = _deviceNotifiedAlertAt[alertId];
+      if (last != null && now.difference(last) < _alertNotifyCooldown) {
+        debugPrint('🔕 System notification for alert $alertId already shown moments ago.');
         return;
       }
+      _deviceNotifiedAlertAt[alertId] = now;
+      _deviceNotifiedAlertAt.removeWhere(
+            (_, shownAt) => now.difference(shownAt) > const Duration(hours: 1),
+      );
     }
 
     final androidDetails = AndroidNotificationDetails(
@@ -430,6 +575,9 @@ class NotificationService {
       icon: '@drawable/logo1',
       playSound: true,
       enableVibration: true,
+      // Every send must ring, even when it updates a notification that is
+      // still sitting in the tray.
+      onlyAlertOnce: false,
     );
 
     const iosDetails = DarwinNotificationDetails(
@@ -479,8 +627,8 @@ class NotificationService {
     final String body = notification?.body?.trim().isNotEmpty == true
         ? notification!.body!.trim()
         : (message.data['message']?.toString().trim() ??
-           message.data['body']?.toString().trim() ??
-           'You have a new AlertU update.');
+        message.data['body']?.toString().trim() ??
+        'You have a new AlertU update.');
 
     _saveToNotificationStore(message: message, title: title, body: body);
   }

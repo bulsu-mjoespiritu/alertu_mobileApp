@@ -13,11 +13,11 @@ import '../services/notification_store.dart';
 import '../services/my_reports_store.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../subpages/livedetails_reports.dart';
-import '..giut/components/alert_details_dialog.dart';
+import 'package:alertu_flutter/components/alert_details_dialog.dart';
 import '../services/notification_service.dart';
 
 // NotificationItem now lives in notification_store.dart (Bug 3/4 fix) so
-// that NotificationService (FCM) and this page share one model and one
+// that NotificationService (FCM) and this page share one model and onefl
 // source of real data instead of each keeping a disconnected copy.
 
 class NotificationsPage extends StatefulWidget {
@@ -161,8 +161,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
             final matches = targetBarangays.any((b) {
               final targetCanonical = NotificationService.matchPaombongBarangay(b) ?? b;
               return targetCanonical.toLowerCase() == userCanonical.toLowerCase() ||
-                     userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
-                     targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
+                  userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
+                  targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
             });
             if (!matches) continue;
           }
@@ -256,7 +256,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
   /// the persisted store.
   bool _isKnownNotification(String id) =>
       _notifications.any((n) => n.id == id) ||
-      notificationStore.notifications.value.any((n) => n.id == id);
+          notificationStore.notifications.value.any((n) => n.id == id);
 
   /// Raises a real phone notification (tray banner, sound, vibration) for
   /// an admin broadcast alert. The in-app card is already saved by
@@ -335,7 +335,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
     final existingIds = _notifications.map((item) => item.id).toSet();
     final newItems =
-        storeItems.where((item) => !existingIds.contains(item.id)).toList();
+    storeItems.where((item) => !existingIds.contains(item.id)).toList();
     if (newItems.isEmpty) return;
 
     setState(() {
@@ -760,8 +760,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
         final matches = targetBarangays.any((b) {
           final targetCanonical = NotificationService.matchPaombongBarangay(b) ?? b;
           return targetCanonical.toLowerCase() == userCanonical.toLowerCase() ||
-                 userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
-                 targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
+              userCanonical.toLowerCase().contains(targetCanonical.toLowerCase()) ||
+              targetCanonical.toLowerCase().contains(userCanonical.toLowerCase());
         });
         if (!matches) {
           debugPrint('ℹ️ [NotificationsPage] Ignored socket alert for $targetBarangays (User is in: $_userBarangay)');
@@ -1170,135 +1170,135 @@ class _NotificationsPageState extends State<NotificationsPage> {
           // with no report behind them (generic app updates) stay inert.
           onTap: isTappable && !isOpening
               ? () {
-                  if (canOpenAlert) {
-                    _openAlertDetails(item);
-                  } else {
-                    _openReportDetails(item);
-                  }
-                }
+            if (canOpenAlert) {
+              _openAlertDetails(item);
+            } else {
+              _openReportDetails(item);
+            }
+          }
               : null,
           child: Container(
-        decoration: BoxDecoration(
-          color: cardBgColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: cardBorderColor, width: 1.2),
-          boxShadow: [
-            BoxShadow(
-              color: (isDark ? Colors.black : const Color(0xFF0F172A))
-                  .withOpacity(isDark ? 0.2 : 0.03),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
+            decoration: BoxDecoration(
+              color: cardBgColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: cardBorderColor, width: 1.2),
+              boxShadow: [
+                BoxShadow(
+                  color: (isDark ? Colors.black : const Color(0xFF0F172A))
+                      .withOpacity(isDark ? 0.2 : 0.03),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
             ),
-          ],
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildLeadingIndicator(item, isDark),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildLeadingIndicator(item, isDark),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Text(
-                          item.title,
-                          style: GoogleFonts.montserrat(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13.5,
-                            color: titleTextColor,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        _formatTime(item.timestamp),
-                        style: GoogleFonts.montserrat(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: timeTextColor,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      // The per-item "x" -- one of the only two ways a
-                      // notification is ever removed (the other being
-                      // "Clear All"). Swipe-to-dismiss used to do this too
-                      // and has been taken out, because an accidental swipe
-                      // silently losing a safety alert is not acceptable in
-                      // an emergency app.
-                      InkWell(
-                        onTap: () => _deleteNotification(item),
-                        borderRadius: BorderRadius.circular(20),
-                        child: Padding(
-                          padding: const EdgeInsets.all(2.0),
-                          child: Icon(
-                            LucideIcons.x,
-                            size: 14,
-                            color: timeTextColor,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    item.description,
-                    style: TextStyle(
-                      fontFamily:
-                      Theme.of(context).textTheme.bodyMedium?.fontFamily,
-                      fontSize: 11.5,
-                      color: bodyTextColor,
-                      height: 1.35,
-                      fontWeight:
-                      item.isSuccess ? FontWeight.w500 : FontWeight.normal,
-                    ),
-                  ),
-                  // Affordance so it's obvious the card leads somewhere.
-                  if (isTappable) ...[
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        if (isOpening)
-                          SizedBox(
-                            width: 11,
-                            height: 11,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 1.6,
-                              valueColor:
-                              AlwaysStoppedAnimation<Color>(bodyTextColor),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.title,
+                              style: GoogleFonts.montserrat(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13.5,
+                                color: titleTextColor,
+                              ),
                             ),
-                          )
-                        else
-                          Icon(
-                            LucideIcons.arrowRight,
-                            size: 12,
-                            color: bodyTextColor,
                           ),
-                        const SizedBox(width: 5),
-                        Text(
-                          isOpening
-                              ? 'Opening...'
-                              : (canOpenAlert
+                          Text(
+                            _formatTime(item.timestamp),
+                            style: GoogleFonts.montserrat(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: timeTextColor,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          // The per-item "x" -- one of the only two ways a
+                          // notification is ever removed (the other being
+                          // "Clear All"). Swipe-to-dismiss used to do this too
+                          // and has been taken out, because an accidental swipe
+                          // silently losing a safety alert is not acceptable in
+                          // an emergency app.
+                          InkWell(
+                            onTap: () => _deleteNotification(item),
+                            borderRadius: BorderRadius.circular(20),
+                            child: Padding(
+                              padding: const EdgeInsets.all(2.0),
+                              child: Icon(
+                                LucideIcons.x,
+                                size: 14,
+                                color: timeTextColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        item.description,
+                        style: TextStyle(
+                          fontFamily:
+                          Theme.of(context).textTheme.bodyMedium?.fontFamily,
+                          fontSize: 11.5,
+                          color: bodyTextColor,
+                          height: 1.35,
+                          fontWeight:
+                          item.isSuccess ? FontWeight.w500 : FontWeight.normal,
+                        ),
+                      ),
+                      // Affordance so it's obvious the card leads somewhere.
+                      if (isTappable) ...[
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            if (isOpening)
+                              SizedBox(
+                                width: 11,
+                                height: 11,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.6,
+                                  valueColor:
+                                  AlwaysStoppedAnimation<Color>(bodyTextColor),
+                                ),
+                              )
+                            else
+                              Icon(
+                                LucideIcons.arrowRight,
+                                size: 12,
+                                color: bodyTextColor,
+                              ),
+                            const SizedBox(width: 5),
+                            Text(
+                              isOpening
+                                  ? 'Opening...'
+                                  : (canOpenAlert
                                   ? 'View alert details'
                                   : 'View incident details'),
-                          style: GoogleFonts.montserrat(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            color: bodyTextColor,
-                          ),
+                              style: GoogleFonts.montserrat(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                color: bodyTextColor,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
-                    ),
-                  ],
-                ],
-              ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
         ),
       ),
     );

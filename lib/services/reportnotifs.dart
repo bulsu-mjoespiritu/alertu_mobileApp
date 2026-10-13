@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import 'clicksoundringtone.dart';
@@ -24,6 +25,85 @@ class ReportNotifService {
   _approvedReportsSubscription;
 
   final Set<String> _notifiedReportIds = <String>{};
+
+  /// Fields on an approved_reports document that can identify who submitted
+  /// the report. A report notification is shown ONLY when one of these
+  /// matches the signed-in user, so residents never get notified about
+  /// other people's reports (privacy -- especially ACCIDENT reports).
+  /// If your documents use a different field, add its name here.
+  static const List<String> _ownerFieldKeys = <String>[
+    'authUid',
+    'userId',
+    'uid',
+    'reporterId',
+    'reporterUid',
+    'submittedBy',
+    'createdBy',
+    'citizenId',
+    'user_id',
+  ];
+
+  /// true  -> every "New Incident Reported" notification goes ONLY to the
+  ///          reporter (current behaviour you asked for).
+  /// false -> only ACCIDENT-type reports are private; other incident types
+  ///          are still announced to every signed-in resident.
+  static const bool _reporterOnlyForAllReports = true;
+
+  /// Report titles/types treated as ACCIDENT (private) reports.
+  bool _isAccidentReport(Map<String, dynamic> report) {
+    final String type = (_readString(report, const <String>[
+      'reportTitle',
+      'incidentType',
+      'title',
+      'category',
+      'hazard',
+    ]) ??
+        '')
+        .toLowerCase();
+    return type.contains('accident') ||
+        type.contains('vehicular') ||
+        type.contains('road crash') ||
+        type.contains('collision');
+  }
+
+  /// Single privacy gate used by both the Firestore listener and the
+  /// external/FCM path. Admin-created reports with no owner field are
+  /// treated as "not the reporter", so private reports stay private.
+  bool _mayNotifyFor(String documentId, Map<String, dynamic> report) {
+    if (_reporterOnlyForAllReports || _isAccidentReport(report)) {
+      return _isReportedByCurrentUser(documentId, report);
+    }
+    return FirebaseAuth.instance.currentUser != null;
+  }
+
+  /// True only when the signed-in user is the reporter of [report].
+  /// Fails closed: no signed-in user, or no recognizable owner field,
+  /// means NO notification.
+  bool _isReportedByCurrentUser(
+      String documentId,
+      Map<String, dynamic> report,
+      ) {
+    final String? currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid == null || currentUid.isEmpty) return false;
+
+    bool sawOwnerField = false;
+    for (final key in _ownerFieldKeys) {
+      final value = report[key]?.toString().trim();
+      if (value == null || value.isEmpty) continue;
+      sawOwnerField = true;
+      if (value == currentUid) return true;
+    }
+
+    if (!sawOwnerField) {
+      // Helps identify the real owner field name if reporters are not
+      // being notified. Safe to remove once confirmed.
+      debugPrint(
+        '⚠️ approved_reports/$documentId has no known owner field. '
+            'Keys: ${report.keys.toList()}',
+      );
+    }
+    return false;
+  }
 
   bool _hasReceivedInitialSnapshot = false;
   bool _isListening = false;
@@ -80,6 +160,11 @@ class ReportNotifService {
     required String documentId,
     required Map<String, dynamic> reportData,
   }) async {
+    if (!_mayNotifyFor(documentId, reportData)) {
+      debugPrint('🔒 Skipping $documentId: current user is not the reporter.');
+      return;
+    }
+
     if (_notifiedReportIds.contains(documentId)) {
       debugPrint('ℹ️ Report $documentId already notified. Skipping duplicate.');
       return;
@@ -110,6 +195,9 @@ class ReportNotifService {
         debugPrint('⚠️ approved_reports document has no data: $documentId');
         continue;
       }
+
+      // Privacy: only the reporter is notified about their own report.
+      if (!_mayNotifyFor(documentId, reportData)) continue;
 
       _notifiedReportIds.add(documentId);
       unawaited(_notifyForReport(documentId, reportData));
